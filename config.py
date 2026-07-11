@@ -4,49 +4,55 @@ Edit everything here. A future GUI can build/replace this same dict structure.
 """
 
 CONFIG = {
-    # --- Launch site & atmosphere ---------------------------------------
+    # --- Launch site ----------------------------------------------------
+    # Atmosphere is always the ISA standard atmosphere (set in simulation.py).
     "environment": {
         "latitude": 39.4025,        # deg (39 24 09 N)
         "longitude": -8.289167,     # deg (008 17 21 W)
-        "elevation": 164.897,           # m, above sea level
-        "atmospheric_model": "standard_atmosphere",
+        "elevation": 164.897,       # m, above sea level
     },
 
     # --- Motor ----------------------------------------------------------
-    # The motor is loaded automatically from the .eng file(s) in
-    # data/motors (see MOTORS_DIR in simulation.py). Dry mass and
-    # propellant mass are read from the .eng header.
+    # Loaded automatically from the .eng file(s) in data/motors
+    # (see MOTORS_DIR in simulation.py). Dry mass and propellant mass are
+    # read from the .eng header.
 
     # --- Rocket (point mass) --------------------------------------------
+    # Drag force = 0.5 * rho * v^2 * drag * reference_area  (constant C_d*A).
+    # Airframe mass is not set here -- it is the optimizer's design variable.
     "rocket": {
-        "radius": 0.049,                     # m, reference radius -> drag area = pi*r^2
-        "mass": 20.0,                        # kg, airframe without motor
-        "center_of_mass_without_motor": 0.0, # m
-        "power_off_drag": 0.5,               # Cd, constant or function of Mach
-        "power_on_drag": 0.5,                # Cd, constant or function of Mach
-        "motor_position": 0.0,               # m, motor mount position
+        "drag": 0.5,               # C_d, constant (a function of Mach is also allowed)
+        "reference_area": 0.007543,  # m^2 (e.g. pi * 0.049^2 for a 98 mm body)
     },
 
     # --- Flight / launch conditions -------------------------------------
+    # Always runs in 3-DOF point-mass mode (set in simulation.py).
     "flight": {
-        "rail_length": 5.0,      # m
-        "inclination": 85.0,     # deg from horizontal
-        "heading": 0.0,          # deg from north
-        "simulation_mode": "3 DOF",  # required for point-mass models
+        "rail_length": 5.0,      # m, launch rail length (minor effect near vertical)
+        "inclination": 85.0,     # deg from horizontal (90 = straight up)
+        "heading": 0.0,          # deg azimuth (0 = North, 90 = East); inert without wind
     },
 
     # --- Optimizer ------------------------------------------------------
     # Sweeps every motor in data/motors and, for each, tunes the airframe
-    # mass by gradient ascent to maximize the objective. C_d*A is held
-    # constant (rocket radius + drag coefficients are fixed).
+    # mass by gradient ascent to maximize the objective. C_d*A is constant.
     "optimizer": {
-        "objective": "apogee",     # currently: maximize apogee (AGL)
+        # Available objectives:
+        #   apogee               - maximize peak altitude (AGL)
+        #   apogee_time          - maximize time to apogee    (-> lower bound mass)
+        #   max_speed            - maximize peak speed         (-> lower bound mass)
+        #   max_mach             - maximize peak Mach          (-> lower bound mass)
+        #   max_acceleration     - maximize peak acceleration  (-> lower bound mass)
+        #   apogee_capped_mach   - maximize apogee s.t. max_mach <= mach_limit
+        #   min_mass_for_altitude- minimize mass s.t. apogee >= target_altitude
+        "objective": "apogee",
+        "mach_limit": 3.0,          # used by objective "apogee_capped_mach"
+        "target_altitude": 12000.0, # m AGL, used by objective "min_mass_for_altitude"
         "mass_initial": 20.0,      # kg, starting airframe mass guess
         "mass_bounds": (1.0, 100.0),  # kg, (min, max) airframe mass
         "fd_step": 0.25,           # kg, finite-difference step for the gradient
-        "learning_rate": 0.5,      # kg per (m/kg) of gradient, initial step scale
-        "max_step": 10.0,          # kg, cap on a single update step
-        "tol": 1e-2,               # kg, stop when the mass update is smaller than this
+        "max_step": 10.0,          # kg, full trial step (backtracking shrinks it)
+        "tol": 1e-3,               # kg, stop when the mass update is smaller than this
         "max_iter": 40,            # safety cap on gradient-ascent iterations
     },
 }

@@ -1,11 +1,13 @@
 """Point-mass trajectory simulation using RocketPy.
 
-Builds and runs the model from a config dict (see config.py). The motor is
-loaded automatically from the .eng file(s) in MOTORS_DIR -- its dry mass and
-propellant mass are parsed from the .eng header.
+Builds and runs the model from a config dict (see config.py). The atmosphere
+(ISA standard) and 3-DOF point-mass mode are fixed here, not in the config.
+The motor is loaded from the .eng file(s) in MOTORS_DIR, with its dry mass and
+propellant mass parsed from the .eng header.
 """
 
 import glob
+import math
 import os
 
 from rocketpy import Environment, Flight, PointMassMotor, PointMassRocket
@@ -50,39 +52,82 @@ def load_point_mass_motor(eng_path):
     return PointMassMotor(thrust_source=eng_path, **masses)
 
 
-def run(config, motor_file=None):
+def run(config, motor_file=None, mass=None):
     """Build the model from a config dict and return (environment, flight).
 
-    If ``motor_file`` is None, the first .eng file found in MOTORS_DIR is used.
+    ``motor_file`` defaults to the first .eng file in MOTORS_DIR.
+    ``mass`` is the airframe mass (kg); it is the optimizer's design variable,
+    so it is passed in here rather than read from the config. If None, the
+    optimizer's ``mass_initial`` is used.
     """
     if motor_file is None:
         motor_files = find_motor_files()
         if not motor_files:
             raise FileNotFoundError(f"No .eng motor files found in {MOTORS_DIR!r}")
         motor_file = motor_files[0]
+    if mass is None:
+        mass = config["optimizer"]["mass_initial"]
 
     env = Environment(
         latitude=config["environment"]["latitude"],
         longitude=config["environment"]["longitude"],
         elevation=config["environment"]["elevation"],
     )
-    env.set_atmospheric_model(type=config["environment"]["atmospheric_model"])
+    env.set_atmospheric_model(type="standard_atmosphere")
 
     motor = load_point_mass_motor(motor_file)
 
-    rocket_cfg = dict(config["rocket"])  # copy so we can pop non-constructor keys
-    motor_position = rocket_cfg.pop("motor_position")
-    rocket = PointMassRocket(**rocket_cfg)
-    rocket.add_motor(motor, position=motor_position)
+    # Constant C_d*A: convert reference area to the radius RocketPy expects,
+    # and use the same drag coefficient with the motor on and off.
+    rocket_cfg = config["rocket"]
+    radius = math.sqrt(rocket_cfg["reference_area"] / math.pi)
+    rocket = PointMassRocket(
+        radius=radius,
+        mass=mass,
+        center_of_mass_without_motor=0.0,  # irrelevant for a 3-DOF point mass
+        power_off_drag=rocket_cfg["drag"],
+        power_on_drag=rocket_cfg["drag"],
+    )
+    rocket.add_motor(motor, position=0.0)  # position irrelevant for a point mass
 
-    flight = Flight(rocket=rocket, environment=env, **config["flight"])
+    flight = Flight(
+        rocket=rocket,
+        environment=env,
+        rail_length=config["flight"]["rail_length"],
+        inclination=config["flight"]["inclination"],
+        heading=config["flight"]["heading"],
+        simulation_mode="3 DOF",  # required for point-mass models
+    )
     return env, flight
 
 
-def summarize(env, flight):
-    """Print the key flight results."""
-    print(f"Apogee (AGL):     {flight.apogee - env.elevation:8.1f} m")
-    print(f"Apogee time:      {flight.apogee_time:8.2f} s")
-    print(f"Max speed:        {flight.max_speed:8.1f} m/s")
-    print(f"Max Mach:         {flight.max_mach_number:8.2f}")
-    print(f"Max acceleration: {flight.max_acceleration:8.1f} m/s^2")
+def metrics(env, flight):
+    """Return the key flight results as a dict."""
+    return {
+        "apogee": flight.apogee - env.elevation,   # m, above ground level
+        "apogee_time": flight.apogee_time,         # s
+        "max_speed": flight.max_speed,             # m/s
+        "max_mach": flight.max_mach_number,        # -
+        "max_acceleration": flight.max_acceleration,  # m/s^2
+    }
+
+
+def full_details(config, motor_file, mass, export_path=None):
+    """Re-run one configuration and emit all data and curves.
+
+    Prints and plots the full RocketPy report (environment, rocket, and flight)
+    and, if ``export_path`` is given, exports the flight time series to CSV.
+    Returns (environment, flight).
+    """
+    env, flight = run(config, motor_file=motor_file, mass=mass)
+
+    env.all_info()            # atmosphere data and plots
+    flight.rocket.all_info()  # rocket properties and diagram
+    flight.all_info()         # full flight data and curves
+
+    if export_path:
+        os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)
+        flight.export_data(export_path)
+        print(f"\nFlight time series exported to {export_path}")
+
+    return env, flight

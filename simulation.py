@@ -129,6 +129,33 @@ _FLIGHT_PLOTS = (
 )
 
 
+def generate_flight_figures(flight, plot_names=_FLIGHT_PLOTS):
+    """Build the selected flight plots and return them as (name, Figure) pairs.
+
+    Like show_all_plots but returns the matplotlib Figures instead of displaying
+    them, so a GUI can embed them. Inapplicable plots are skipped.
+    """
+    import matplotlib.pyplot as plt
+
+    real_show = plt.show
+    plt.show = lambda *args, **kwargs: None
+    figures = []
+    try:
+        for name in plot_names:
+            existing = set(plt.get_fignums())
+            try:
+                getattr(flight.plots, name)()
+            except Exception as exc:
+                print(f"  (skipped {name}: {exc})")
+                continue
+            for num in plt.get_fignums():
+                if num not in existing:
+                    figures.append((name, plt.figure(num)))
+    finally:
+        plt.show = real_show
+    return figures
+
+
 def show_all_plots(flight, plot_names=_FLIGHT_PLOTS):
     """Draw the selected flight plots and show them all at once.
 

@@ -201,8 +201,6 @@ class OptimizerGUI:
         self.run_btn.pack(side=tk.LEFT)
         ttk.Button(top, text="Clear inputs", command=self.on_clear).pack(
             side=tk.LEFT, padx=(6, 0))
-        ttk.Button(top, text="Load defaults", command=self.on_defaults).pack(
-            side=tk.LEFT, padx=(6, 0))
         self.status = ttk.Label(top, text="Ready", foreground="gray")
         self.status.pack(side=tk.LEFT, padx=8)
         self.progress = ttk.Progressbar(right, mode="determinate")
@@ -303,16 +301,19 @@ class OptimizerGUI:
         for path, var in self.vars.items():
             var.set(fields.get(self._path_key(path), ""))
 
-    def _apply_defaults(self, config):
-        """Fill the form with the CONFIG defaults."""
+    def _apply_config(self, config):
+        """Fill the form fields from a config dict (defaults or a saved run)."""
         for path, var in self.vars.items():
             section, key = path
-            if key == "mass_min":
-                value = config["optimizer"]["mass_bounds"][0]
-            elif key == "mass_max":
-                value = config["optimizer"]["mass_bounds"][1]
-            else:
-                value = config[section][key]
+            try:
+                if key == "mass_min":
+                    value = config["optimizer"]["mass_bounds"][0]
+                elif key == "mass_max":
+                    value = config["optimizer"]["mass_bounds"][1]
+                else:
+                    value = config[section][key]
+            except (KeyError, IndexError, TypeError):
+                continue  # leave the field as-is if the config lacks it
             var.set(str(value))
 
     def _collect_settings(self):
@@ -330,9 +331,6 @@ class OptimizerGUI:
     def on_clear(self):
         for var in self.vars.values():
             var.set("")
-
-    def on_defaults(self):
-        self._apply_defaults(CONFIG)
 
     def _on_close(self):
         store.save_settings(self._collect_settings())
@@ -489,10 +487,12 @@ class OptimizerGUI:
             self.recent_combo.current(0)
 
     def _maybe_open_latest(self):
+        # On startup just show the last results; keep the inputs restored from
+        # saved settings rather than overwriting them.
         if getattr(self, "_recent", None):
             self._open_results_payload(
                 store.load_results(self._recent[0]["path"]),
-                message="Loaded most recent run.")
+                message="Loaded most recent run.", update_inputs=False)
 
     def on_open_recent(self):
         idx = self.recent_combo.current()
@@ -503,9 +503,12 @@ class OptimizerGUI:
         except (OSError, ValueError) as exc:
             messagebox.showerror("Could not open run", str(exc))
             return
-        self._open_results_payload(payload, message="Loaded saved run.")
+        # Explicitly opening a past run also restores its inputs so it can be
+        # tweaked and re-run.
+        self._open_results_payload(payload, message="Loaded saved run.",
+                                   update_inputs=True)
 
-    def _open_results_payload(self, payload, message="Loaded."):
+    def _open_results_payload(self, payload, message="Loaded.", update_inputs=False):
         cfg = payload.get("config", {})
         try:  # JSON turned the mass-bounds tuple into a list
             cfg["optimizer"]["mass_bounds"] = tuple(cfg["optimizer"]["mass_bounds"])
@@ -514,9 +517,22 @@ class OptimizerGUI:
         self.cfg = cfg
         self.results = payload.get("results", [])
         self._populate_table(self.results)
+        if update_inputs:
+            self._apply_config(cfg)
+            self._set_chosen_from_results(self.results)
         self.status.config(text=message)
         self.details_btn.config(
             state=tk.NORMAL if self.results else tk.DISABLED)
+
+    def _set_chosen_from_results(self, results):
+        """Set the Chosen list to the motors used in a loaded run."""
+        self.chosen = {}
+        for r in results:
+            path = r["motor_file"]
+            name = motor_name(path)
+            self.all_motors.setdefault(name, path)
+            self.chosen[name] = self.all_motors[name]
+        self._refresh_chosen()
 
     def _run_failed(self, exc):
         self._set_busy(False, "Error.")

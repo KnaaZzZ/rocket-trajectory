@@ -27,6 +27,7 @@ from matplotlib.backends.backend_tkagg import (  # noqa: E402
     NavigationToolbar2Tk,
 )
 
+import store  # noqa: E402
 from config import CONFIG  # noqa: E402
 from optimizer import optimize  # noqa: E402
 from simulation import (  # noqa: E402
@@ -101,13 +102,20 @@ class OptimizerGUI:
         self.results = []       # last optimize() results, index-aligned to rows
         self.all_motors = {}    # motor name -> .eng path (library + saved + added)
         self.chosen = {}        # motor name -> .eng path (optimizer runs these)
+        self.cfg = None         # config used for the currently shown results
         self._busy = False
 
+        self.settings = store.load_settings()
         self._build_config_panel()
         self._build_motor_panel()
         self._build_results_panel()
-        self._load_defaults(CONFIG)
+        self._apply_settings(self.settings)   # blank unless previously saved
         self._load_library()
+        self._apply_chosen(self.settings.get("chosen", []))
+        self._refresh_recent()
+        self._maybe_open_latest()
+
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # --- config panel ---------------------------------------------------
     def _build_config_panel(self):
@@ -191,10 +199,23 @@ class OptimizerGUI:
         top.pack(fill=tk.X)
         self.run_btn = ttk.Button(top, text="Run Optimizer", command=self.on_run)
         self.run_btn.pack(side=tk.LEFT)
+        ttk.Button(top, text="Clear inputs", command=self.on_clear).pack(
+            side=tk.LEFT, padx=(6, 0))
+        ttk.Button(top, text="Load defaults", command=self.on_defaults).pack(
+            side=tk.LEFT, padx=(6, 0))
         self.status = ttk.Label(top, text="Ready", foreground="gray")
         self.status.pack(side=tk.LEFT, padx=8)
         self.progress = ttk.Progressbar(right, mode="determinate")
         self.progress.pack(fill=tk.X, pady=4)
+
+        recent = ttk.Frame(right)
+        recent.pack(fill=tk.X)
+        ttk.Label(recent, text="Recent runs:").pack(side=tk.LEFT)
+        self.recent_var = tk.StringVar()
+        self.recent_combo = ttk.Combobox(recent, textvariable=self.recent_var,
+                                         state="readonly")
+        self.recent_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        ttk.Button(recent, text="Open", command=self.on_open_recent).pack(side=tk.LEFT)
 
         ttk.Label(right, text="Configurations (ranked by objective)",
                   font=("", 11, "bold")).pack(anchor=tk.W)
@@ -272,7 +293,18 @@ class OptimizerGUI:
         self._refresh_chosen()
 
     # --- config <-> form ------------------------------------------------
-    def _load_defaults(self, config):
+    @staticmethod
+    def _path_key(path):
+        return ".".join(path)
+
+    def _apply_settings(self, settings):
+        """Fill the form from saved settings; blank for anything not saved."""
+        fields = settings.get("fields", {})
+        for path, var in self.vars.items():
+            var.set(fields.get(self._path_key(path), ""))
+
+    def _apply_defaults(self, config):
+        """Fill the form with the CONFIG defaults."""
         for path, var in self.vars.items():
             section, key = path
             if key == "mass_min":
@@ -283,6 +315,29 @@ class OptimizerGUI:
                 value = config[section][key]
             var.set(str(value))
 
+    def _collect_settings(self):
+        return {
+            "fields": {self._path_key(p): v.get() for p, v in self.vars.items()},
+            "chosen": sorted(self.chosen),
+        }
+
+    def _apply_chosen(self, names):
+        for name in names:
+            if name in self.all_motors:
+                self.chosen[name] = self.all_motors[name]
+        self._refresh_chosen()
+
+    def on_clear(self):
+        for var in self.vars.values():
+            var.set("")
+
+    def on_defaults(self):
+        self._apply_defaults(CONFIG)
+
+    def _on_close(self):
+        store.save_settings(self._collect_settings())
+        self.root.destroy()
+
     def _kind_for(self, path):
         for _, fields in FIELDS:
             for p, _, kind in fields:
@@ -290,18 +345,77 @@ class OptimizerGUI:
                     return kind
         return "float"
 
+    # Per-field validation: label + a predicate the numeric value must satisfy.
+    _RULES = {
+        ("rocket", "drag"): ("Drag coefficient", lambda v: v >= 0, "must be >= 0"),
+        ("rocket", "reference_area"): ("Reference area", lambda v: v > 0, "must be > 0"),
+        ("flight", "rail_length"): ("Rail length", lambda v: v > 0, "must be > 0"),
+        ("flight", "inclination"): ("Inclination", lambda v: 0 < v <= 90,
+                                    "must be within (0, 90]"),
+        ("optimizer", "mass_initial"): ("Initial mass", lambda v: v > 0, "must be > 0"),
+        ("optimizer", "mass_min"): ("Mass min", lambda v: v > 0, "must be > 0"),
+        ("optimizer", "mass_max"): ("Mass max", lambda v: v > 0, "must be > 0"),
+        ("optimizer", "fd_step"): ("FD step", lambda v: v > 0, "must be > 0"),
+        ("optimizer", "max_step"): ("Max step", lambda v: v > 0, "must be > 0"),
+        ("optimizer", "tol"): ("Tolerance", lambda v: v > 0, "must be > 0"),
+        ("optimizer", "max_iter"): ("Max iterations", lambda v: v >= 1, "must be >= 1"),
+        ("optimizer", "mach_limit"): ("Mach limit", lambda v: v > 0, "must be > 0"),
+        ("optimizer", "target_altitude"): ("Target altitude", lambda v: v > 0,
+                                           "must be > 0"),
+    }
+
     def _read_config(self):
+        """Build a validated config from the form; raise ValueError listing issues."""
         cfg = copy.deepcopy(CONFIG)
+        errors = []
+        values = {}
+        objective = self.vars[("optimizer", "objective")].get().strip()
+        # Objective-specific fields are only required for their objective.
+        skip = set()
+        if objective != "apogee_capped_mach":
+            skip.add(("optimizer", "mach_limit"))
+        if objective != "min_mass_for_altitude":
+            skip.add(("optimizer", "target_altitude"))
+
         for path, var in self.vars.items():
-            section, key = path
-            raw = var.get().strip()
             kind = self._kind_for(path)
+            raw = var.get().strip()
+            label = self._RULES.get(path, (path[-1],))[0] if path in self._RULES \
+                else path[-1].replace("_", " ")
             if kind == "combo":
-                value = raw
-            elif kind == "int":
-                value = int(float(raw))
-            else:
-                value = float(raw)
+                if not raw:
+                    errors.append("Objective: select one")
+                elif raw not in OBJECTIVES:
+                    errors.append(f"Objective: unknown value {raw!r}")
+                values[path] = raw
+                continue
+            if path in skip:
+                continue
+            if raw == "":
+                errors.append(f"{label}: required")
+                continue
+            try:
+                value = int(float(raw)) if kind == "int" else float(raw)
+            except ValueError:
+                errors.append(f"{label}: must be a number")
+                continue
+            rule = self._RULES.get(path)
+            if rule and not rule[1](value):
+                errors.append(f"{rule[0]}: {rule[2]}")
+            values[path] = value
+
+        # Cross-field checks (only if both bounds parsed).
+        lo = values.get(("optimizer", "mass_min"))
+        hi = values.get(("optimizer", "mass_max"))
+        if lo is not None and hi is not None and lo >= hi:
+            errors.append("Mass min must be less than mass max.")
+
+        if errors:
+            raise ValueError("Please fix:\n  - " + "\n  - ".join(errors))
+
+        # Commit values into the config structure.
+        for path, value in values.items():
+            section, key = path
             if key == "mass_min":
                 cfg["optimizer"]["mass_bounds"] = (
                     value, cfg["optimizer"]["mass_bounds"][1])
@@ -310,9 +424,6 @@ class OptimizerGUI:
                     cfg["optimizer"]["mass_bounds"][0], value)
             else:
                 cfg[section][key] = value
-        lo, hi = cfg["optimizer"]["mass_bounds"]
-        if lo >= hi:
-            raise ValueError("Mass min must be less than mass max.")
         return cfg
 
     # --- run optimizer --------------------------------------------------
@@ -348,10 +459,7 @@ class OptimizerGUI:
         self.progress.config(value=done)
         self.status.config(text=f"Optimizing {done}/{total}: {name}")
 
-    def _run_done(self, cfg, results):
-        self.cfg = cfg
-        self.results = results
-        objective = cfg["optimizer"]["objective"]
+    def _populate_table(self, results):
         self.tree.delete(*self.tree.get_children())
         for i, r in enumerate(results, 1):
             m = r["metrics"]
@@ -361,8 +469,54 @@ class OptimizerGUI:
                 f"{m['max_speed']:.1f}", f"{m['max_mach']:.2f}",
                 f"{m['max_acceleration']:.1f}",
             ))
+
+    def _run_done(self, cfg, results):
+        self.cfg = cfg
+        self.results = results
+        objective = cfg["optimizer"]["objective"]
+        self._populate_table(results)
+        store.save_results(cfg, results, objective)  # save this run to history
+        store.save_settings(self._collect_settings())
+        self._refresh_recent()
         self._set_busy(False,
                        f"Done. {len(results)} configuration(s), ranked by {objective}.")
+
+    # --- recent runs ----------------------------------------------------
+    def _refresh_recent(self):
+        self._recent = store.list_results()
+        self.recent_combo["values"] = [e["label"] for e in self._recent]
+        if self._recent:
+            self.recent_combo.current(0)
+
+    def _maybe_open_latest(self):
+        if getattr(self, "_recent", None):
+            self._open_results_payload(
+                store.load_results(self._recent[0]["path"]),
+                message="Loaded most recent run.")
+
+    def on_open_recent(self):
+        idx = self.recent_combo.current()
+        if idx < 0 or idx >= len(getattr(self, "_recent", [])):
+            return
+        try:
+            payload = store.load_results(self._recent[idx]["path"])
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Could not open run", str(exc))
+            return
+        self._open_results_payload(payload, message="Loaded saved run.")
+
+    def _open_results_payload(self, payload, message="Loaded."):
+        cfg = payload.get("config", {})
+        try:  # JSON turned the mass-bounds tuple into a list
+            cfg["optimizer"]["mass_bounds"] = tuple(cfg["optimizer"]["mass_bounds"])
+        except (KeyError, TypeError):
+            pass
+        self.cfg = cfg
+        self.results = payload.get("results", [])
+        self._populate_table(self.results)
+        self.status.config(text=message)
+        self.details_btn.config(
+            state=tk.NORMAL if self.results else tk.DISABLED)
 
     def _run_failed(self, exc):
         self._set_busy(False, "Error.")

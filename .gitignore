@@ -9,6 +9,10 @@ __pycache__/
 # Simulation exports
 output/
 
+# GUI state and saved run history
+gui_state.json
+data/results/
+
 # Editor / IDE
 .vscode/
 .claude/settings.local.json

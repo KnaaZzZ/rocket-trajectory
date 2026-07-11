@@ -112,18 +112,52 @@ def metrics(env, flight):
     }
 
 
-def full_details(config, motor_file, mass, export_path=None):
-    """Re-run one configuration and emit all data and curves.
+# Flight plots relevant to a point-mass model. The rest of RocketPy's plots
+# (attitude, angular kinematics, stability/control, rail buttons, pressure
+# sensors) need rotation, aero surfaces, or parachutes and don't apply here.
+_POINT_MASS_PLOTS = (
+    "trajectory_3d",
+    "linear_kinematics_data",   # position, velocity, acceleration vs time
+    "flight_path_angle_data",
+    "fluid_mechanics_data",     # Mach, Reynolds, dynamic pressure vs time
+    "energy_data",              # kinetic / potential / total energy
+)
 
-    Prints and plots the full RocketPy report (environment, rocket, and flight)
-    and, if ``export_path`` is given, exports the flight time series to CSV.
-    Returns (environment, flight).
+
+def show_all_plots(flight, plot_names=_POINT_MASS_PLOTS):
+    """Draw the selected flight plots and show them all at once.
+
+    RocketPy calls plt.show() after each plot, which makes figures appear one
+    at a time. We suppress those intermediate calls so every figure is built
+    first, then show them together in a single blocking call.
+    """
+    import matplotlib.pyplot as plt
+
+    real_show = plt.show
+    plt.show = lambda *args, **kwargs: None  # collect figures, don't display yet
+    try:
+        for name in plot_names:
+            try:
+                getattr(flight.plots, name)()
+            except Exception as exc:  # a plot may not apply to this flight
+                print(f"  (skipped {name}: {exc})")
+    finally:
+        plt.show = real_show
+
+    plt.show()  # display every accumulated figure simultaneously
+
+
+def full_details(config, motor_file, mass, export_path=None):
+    """Re-run one configuration and emit its data and the relevant curves.
+
+    Prints the numeric flight summary, shows the point-mass-relevant plots all
+    at once, and (if ``export_path`` is given) exports the flight time series to
+    CSV. Returns (environment, flight).
     """
     env, flight = run(config, motor_file=motor_file, mass=mass)
 
-    env.all_info()            # atmosphere data and plots
-    flight.rocket.all_info()  # rocket properties and diagram
-    flight.all_info()         # full flight data and curves
+    flight.info()          # numeric summary (text only, no plots)
+    show_all_plots(flight)  # relevant curves, shown together
 
     if export_path:
         os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)

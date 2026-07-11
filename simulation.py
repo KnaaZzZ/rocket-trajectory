@@ -203,8 +203,9 @@ _FLIGHT_PLOTS = (
 def generate_flight_figures(flight, plot_names=_FLIGHT_PLOTS):
     """Build the selected flight plots and return them as (name, Figure) pairs.
 
-    Like show_all_plots but returns the matplotlib Figures instead of displaying
-    them, so a GUI can embed them. Inapplicable plots are skipped.
+    RocketPy calls plt.show() after each plot; we suppress that and return the
+    matplotlib Figures instead, so the GUI can embed them. Inapplicable plots
+    (rotation / aero surfaces / parachutes) are skipped.
     """
     import matplotlib.pyplot as plt
 
@@ -225,46 +226,3 @@ def generate_flight_figures(flight, plot_names=_FLIGHT_PLOTS):
     finally:
         plt.show = real_show
     return figures
-
-
-def show_all_plots(flight, plot_names=_FLIGHT_PLOTS):
-    """Draw the selected flight plots and show them all at once.
-
-    RocketPy calls plt.show() after each plot, which makes figures appear one
-    at a time. We suppress those intermediate calls so every figure is built
-    first, then show them together in a single blocking call.
-    """
-    import matplotlib.pyplot as plt
-
-    real_show = plt.show
-    plt.show = lambda *args, **kwargs: None  # collect figures, don't display yet
-    try:
-        for name in plot_names:
-            try:
-                getattr(flight.plots, name)()
-            except Exception as exc:  # a plot may not apply to this flight
-                print(f"  (skipped {name}: {exc})")
-    finally:
-        plt.show = real_show
-
-    plt.show()  # display every accumulated figure simultaneously
-
-
-def full_details(config, motor_file, mass, export_path=None):
-    """Re-run one configuration and emit its data and the relevant curves.
-
-    Prints the numeric flight summary, shows the point-mass-relevant plots all
-    at once, and (if ``export_path`` is given) exports the flight time series to
-    CSV. Returns (environment, flight).
-    """
-    env, flight = run(config, motor_file=motor_file, mass=mass)
-
-    flight.info()          # numeric summary (text only, no plots)
-    show_all_plots(flight)  # relevant curves, shown together
-
-    if export_path:
-        os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)
-        flight.export_data(export_path)
-        print(f"\nFlight time series exported to {export_path}")
-
-    return env, flight

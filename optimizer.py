@@ -155,31 +155,3 @@ def optimize(config=None, motor_files=None, progress=None):
 
 def _motor_name(path):
     return os.path.splitext(os.path.basename(path))[0]
-
-
-def report(results, objective="apogee"):
-    """Print all configurations as a table, ranked by the objective."""
-    header = (
-        f"{'#':>2}  {'Motor':<28} {'Mass':>7} {'Apogee':>10} {'Apo t':>7} "
-        f"{'MaxV':>8} {'MaxMach':>8} {'MaxAcc':>9}"
-    )
-    units = (
-        f"{'':>2}  {'':<28} {'(kg)':>7} {'(m AGL)':>10} {'(s)':>7} "
-        f"{'(m/s)':>8} {'(-)':>8} {'(m/s^2)':>9}"
-    )
-    print(f"Ranked by: {objective} (highest first)")
-    print(header)
-    print(units)
-    print("-" * len(header))
-    for i, r in enumerate(results, 1):
-        m = r["metrics"]
-        print(
-            f"{i:>2}  {_motor_name(r['motor_file']):<28} {r['mass']:>7.2f} "
-            f"{m['apogee']:>10.1f} {m['apogee_time']:>7.2f} "
-            f"{m['max_speed']:>8.1f} {m['max_mach']:>8.2f} {m['max_acceleration']:>9.1f}"
-        )
-
-
-if __name__ == "__main__":
-    results = optimize(CONFIG)
-    report(results, CONFIG["optimizer"]["objective"])

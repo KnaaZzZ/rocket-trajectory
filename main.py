@@ -15,9 +15,25 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from config import CONFIG
 from optimizer import _motor_name, optimize, report
-from simulation import full_details
+from simulation import LIBRARY_DIR, SAVED_DIR, find_motor_files, full_details
 
 OUTPUT_DIR = "output"
+
+
+def cli_motor_files():
+    """Motors for the CLI sweep: the saved set if any, else the full library.
+
+    (The GUI lets you pick motors explicitly; the CLI defaults to your saved
+    working set so `python main.py` doesn't sweep all 256 library motors.)
+    """
+    saved = find_motor_files(SAVED_DIR)
+    if saved:
+        print(f"Using {len(saved)} saved motor(s) from {SAVED_DIR}/.")
+        return saved
+    library = find_motor_files(LIBRARY_DIR)
+    print(f"No saved motors; sweeping the full library "
+          f"({len(library)} motors) -- this may take a while.")
+    return library
 
 
 def select_config(results):
@@ -38,7 +54,7 @@ def select_config(results):
 
 
 if __name__ == "__main__":
-    results = optimize(CONFIG)
+    results = optimize(CONFIG, motor_files=cli_motor_files())
     report(results, CONFIG["optimizer"]["objective"])
 
     selected = select_config(results)

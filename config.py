@@ -13,7 +13,7 @@ CONFIG = {
     },
 
     # --- Motor ----------------------------------------------------------
-    # Loaded automatically from the .eng file(s) in data/motors
+    # Loaded automatically from the .eng file(s) in the motor library (data/library)
     # (see MOTORS_DIR in simulation.py). Dry mass and propellant mass are
     # read from the .eng header.
 
@@ -34,7 +34,7 @@ CONFIG = {
     },
 
     # --- Optimizer ------------------------------------------------------
-    # Sweeps every motor in data/motors and, for each, tunes the airframe
+    # Sweeps every motor in the motor library (data/library) and, for each, tunes the airframe
     # mass by gradient ascent to maximize the objective. C_d*A is constant.
     "optimizer": {
         # Available objectives:

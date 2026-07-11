@@ -2,18 +2,25 @@
 
 Builds and runs the model from a config dict (see config.py). The atmosphere
 (ISA standard) and 3-DOF point-mass mode are fixed here, not in the config.
-The motor is loaded from the .eng file(s) in MOTORS_DIR, with its dry mass and
-propellant mass parsed from the .eng header.
+Motors are loaded from .eng file(s), with dry mass and propellant mass parsed
+from the .eng header.
+
+Motor directories:
+  * LIBRARY_DIR -- the full downloaded motor library (read-only source).
+  * SAVED_DIR   -- motors the user has chosen/added and saved to keep.
 """
 
 import glob
 import math
 import os
+import shutil
 
 from rocketpy import Environment, Flight, PointMassMotor, PointMassRocket
 
-# Directory scanned for motor thrust-curve files.
-MOTORS_DIR = "data/motors"
+# Full downloaded motor library (source) and the user's saved working set.
+LIBRARY_DIR = "data/library"
+SAVED_DIR = "data/saved"
+MOTORS_DIR = LIBRARY_DIR  # default directory the optimizer/run() fall back to
 
 
 def parse_eng_header(eng_path):
@@ -50,6 +57,70 @@ def load_point_mass_motor(eng_path):
     """Build a PointMassMotor from a single .eng file."""
     masses = parse_eng_header(eng_path)
     return PointMassMotor(thrust_source=eng_path, **masses)
+
+
+def motor_name(eng_path):
+    """Human-readable motor name from an .eng path (no dir, no extension)."""
+    return os.path.splitext(os.path.basename(eng_path))[0]
+
+
+def validate_eng_text(text):
+    """Raise ValueError if ``text`` isn't a usable RASP .eng motor definition.
+
+    Checks the header parses to positive masses and that at least one thrust
+    data point is present.
+    """
+    header_seen = False
+    data_points = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith(";"):
+            continue
+        if not header_seen:
+            fields = line.split()
+            if len(fields) < 7:
+                raise ValueError("Header line must have 7 fields "
+                                 "(name diam length delays prop_mass total_mass mfr).")
+            prop, total = float(fields[4]), float(fields[5])
+            if prop <= 0 or total <= prop:
+                raise ValueError("Propellant mass must be > 0 and less than total mass.")
+            header_seen = True
+        else:
+            parts = line.split()
+            if len(parts) >= 2:
+                float(parts[0]); float(parts[1])
+                data_points += 1
+    if not header_seen:
+        raise ValueError("No header line found.")
+    if data_points < 2:
+        raise ValueError("Need at least two thrust-curve data points.")
+
+
+def save_motor_text(text, name, dest_dir=SAVED_DIR):
+    """Validate ``text`` and write it as ``dest_dir/<name>.eng``. Returns the path."""
+    validate_eng_text(text)
+    os.makedirs(dest_dir, exist_ok=True)
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name).strip("_")
+    if not safe:
+        safe = "motor"
+    if not safe.lower().endswith(".eng"):
+        safe += ".eng"
+    path = os.path.join(dest_dir, safe)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text if text.endswith("\n") else text + "\n")
+    return path
+
+
+def save_motor_files(eng_paths, dest_dir=SAVED_DIR):
+    """Copy the given .eng files into ``dest_dir``. Returns the new paths."""
+    os.makedirs(dest_dir, exist_ok=True)
+    saved = []
+    for src in eng_paths:
+        dest = os.path.join(dest_dir, os.path.basename(src))
+        if os.path.abspath(src) != os.path.abspath(dest):
+            shutil.copyfile(src, dest)
+        saved.append(dest)
+    return saved
 
 
 def run(config, motor_file=None, mass=None):

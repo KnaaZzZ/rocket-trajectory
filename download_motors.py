@@ -1,8 +1,8 @@
-"""Download motor thrust curves from thrustcurve.org into data/motors.
+"""Download motor thrust curves from thrustcurve.org into data/library.
 
 Fetches every RASP (.eng) motor for a manufacturer via the public
 thrustcurve.org API and writes each as
-``data/motors/<ManufacturerAbbrev>_<designation>.eng``.
+``data/library/<ManufacturerAbbrev>_<designation>.eng``.
 
 Examples:
     python download_motors.py                     # all Cesaroni motors
@@ -60,7 +60,7 @@ def _sanitize(name):
 
 
 def download_manufacturer(manufacturer="Cesaroni", impulse_class=None,
-                          out_dir="data/motors"):
+                          out_dir="data/library"):
     """Download all RASP motors for a manufacturer into ``out_dir``."""
     results = search_motors(manufacturer, impulse_class)
     if not results:
@@ -98,7 +98,7 @@ def main():
     parser.add_argument("--manufacturer", default="Cesaroni")
     parser.add_argument("--impulse-class", default=None,
                         help="Single impulse class letter, e.g. N")
-    parser.add_argument("--out", default="data/motors", help="Output directory")
+    parser.add_argument("--out", default="data/library", help="Output directory")
     args = parser.parse_args()
     download_manufacturer(args.manufacturer, args.impulse_class, args.out)
 

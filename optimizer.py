@@ -130,15 +130,25 @@ def optimize_mass(config, motor_file, opt=None):
     }
 
 
-def optimize(config=None):
-    """Optimize airframe mass for every motor; return configs ranked by score."""
+def optimize(config=None, motor_files=None, progress=None):
+    """Optimize airframe mass for each motor; return configs ranked by score.
+
+    ``motor_files`` is the list of .eng paths to sweep; if None, the whole
+    library is used. ``progress`` is an optional callback(done, total, name)
+    invoked after each motor, e.g. to drive a GUI progress bar.
+    """
     config = config or CONFIG
 
-    motor_files = find_motor_files()
+    if motor_files is None:
+        motor_files = find_motor_files()
     if not motor_files:
-        raise FileNotFoundError("No .eng motor files found in data/motors")
+        raise FileNotFoundError("No .eng motor files to optimize.")
 
-    results = [optimize_mass(config, mf) for mf in motor_files]
+    results = []
+    for i, mf in enumerate(motor_files, 1):
+        results.append(optimize_mass(config, mf))
+        if progress:
+            progress(i, len(motor_files), _motor_name(mf))
     results.sort(key=lambda r: r["score"], reverse=True)
     return results
 

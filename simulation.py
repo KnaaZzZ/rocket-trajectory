@@ -112,19 +112,27 @@ def metrics(env, flight):
     }
 
 
-# Flight plots relevant to a point-mass model. The rest of RocketPy's plots
-# (attitude, angular kinematics, stability/control, rail buttons, pressure
-# sensors) need rotation, aero surfaces, or parachutes and don't apply here.
-_POINT_MASS_PLOTS = (
+# Every RocketPy flight plot. Comment out any you don't want -- ones that
+# don't apply to a point-mass flight (rotation, aero surfaces, parachutes) are
+# skipped automatically with a printed note.
+_FLIGHT_PLOTS = (
     "trajectory_3d",
-    "linear_kinematics_data",   # position, velocity, acceleration vs time
+    "linear_kinematics_data",       # position, velocity, acceleration vs time
     "flight_path_angle_data",
-    "fluid_mechanics_data",     # Mach, Reynolds, dynamic pressure vs time
-    "energy_data",              # kinetic / potential / total energy
+    "attitude_data",
+    "angular_kinematics_data",
+    "aerodynamic_forces",
+    "fluid_mechanics_data",         # Mach, Reynolds, dynamic pressure vs time
+    "stability_and_control_data",
+    "energy_data",                  # kinetic / potential / total energy
+    "pressure_rocket_altitude",
+    "pressure_signals",
+    "rail_buttons_forces",
+    "rail_buttons_bending_moments",
 )
 
 
-def show_all_plots(flight, plot_names=_POINT_MASS_PLOTS):
+def show_all_plots(flight, plot_names=_FLIGHT_PLOTS):
     """Draw the selected flight plots and show them all at once.
 
     RocketPy calls plt.show() after each plot, which makes figures appear one

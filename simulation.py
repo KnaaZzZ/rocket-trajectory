@@ -119,11 +119,8 @@ _FLIGHT_PLOTS = (
     "trajectory_3d",
     "linear_kinematics_data",       # position, velocity, acceleration vs time
     "flight_path_angle_data",
-    "attitude_data",
-    "angular_kinematics_data",
     "aerodynamic_forces",
     "fluid_mechanics_data",         # Mach, Reynolds, dynamic pressure vs time
-    "stability_and_control_data",
     "energy_data",                  # kinetic / potential / total energy
     "pressure_rocket_altitude",
     "pressure_signals",

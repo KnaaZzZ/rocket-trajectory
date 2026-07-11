@@ -11,6 +11,7 @@ output/
 
 # Editor / IDE
 .vscode/
+.claude/settings.local.json
 
 # OS
 Thumbs.db

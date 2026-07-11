@@ -9,8 +9,9 @@ __pycache__/
 # Simulation exports
 output/
 
-# GUI state and saved run history
+# GUI state, presets, and saved run history
 gui_state.json
+presets.json
 data/results/
 
 # Editor / IDE

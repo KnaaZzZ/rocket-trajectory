@@ -13,11 +13,10 @@ Columns, left to right:
 Run with:  python gui.py
 """
 
-import copy
 import os
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import matplotlib
 
@@ -28,7 +27,6 @@ from matplotlib.backends.backend_tkagg import (  # noqa: E402
 )
 
 import store  # noqa: E402
-from config import CONFIG  # noqa: E402
 from optimizer import optimize  # noqa: E402
 from simulation import (  # noqa: E402
     LIBRARY_DIR,
@@ -103,8 +101,10 @@ class OptimizerGUI:
         self.all_motors = {}    # motor name -> .eng path (library + saved + added)
         self.chosen = {}        # motor name -> .eng path (optimizer runs these)
         self.cfg = None         # config used for the currently shown results
+        self.preset_combos = {}  # group key -> ttk.Combobox of preset names
         self._busy = False
 
+        self.presets = store.load_presets()
         self.settings = store.load_settings()
         self._build_config_panel()
         self._build_motor_panel()
@@ -125,6 +125,7 @@ class OptimizerGUI:
         for group_name, fields in FIELDS:
             box = ttk.LabelFrame(left, text=group_name, padding=6)
             box.pack(fill=tk.X, pady=3)
+            self._build_preset_row(box, fields[0][0][0])  # group key = section
             for path, label, kind in fields:
                 row = ttk.Frame(box)
                 row.pack(fill=tk.X, pady=1)
@@ -137,6 +138,22 @@ class OptimizerGUI:
                 else:
                     widget = ttk.Entry(row, textvariable=var, width=17)
                 widget.pack(side=tk.RIGHT)
+
+    def _build_preset_row(self, box, group_key):
+        """Preset combobox + Save/Load/Delete for one input group."""
+        row = ttk.Frame(box)
+        row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(row, text="Preset:").pack(side=tk.LEFT)
+        combo = ttk.Combobox(row, state="readonly", width=10)
+        combo.pack(side=tk.LEFT, padx=2)
+        self.preset_combos[group_key] = combo
+        ttk.Button(row, text="Save", width=5,
+                   command=lambda: self._save_preset(group_key)).pack(side=tk.LEFT)
+        ttk.Button(row, text="Load", width=5,
+                   command=lambda: self._load_preset(group_key)).pack(side=tk.LEFT)
+        ttk.Button(row, text="Del", width=4,
+                   command=lambda: self._delete_preset(group_key)).pack(side=tk.LEFT)
+        self._refresh_preset_combo(group_key)
 
     # --- motor panel ----------------------------------------------------
     def _build_motor_panel(self):
@@ -332,6 +349,53 @@ class OptimizerGUI:
         for var in self.vars.values():
             var.set("")
 
+    # --- presets (per input group) --------------------------------------
+    def _group_paths(self, group_key):
+        return [p for p in self.vars if p[0] == group_key]
+
+    def _refresh_preset_combo(self, group_key):
+        names = sorted(self.presets.get(group_key, {}))
+        combo = self.preset_combos[group_key]
+        combo["values"] = names
+        if combo.get() not in names:
+            combo.set("")
+
+    def _save_preset(self, group_key):
+        name = simpledialog.askstring(
+            "Save preset", f"Name for this {group_key} preset:", parent=self.root)
+        if not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        values = {self._path_key(p): self.vars[p].get()
+                  for p in self._group_paths(group_key)}
+        self.presets.setdefault(group_key, {})[name] = values
+        store.save_presets(self.presets)
+        self._refresh_preset_combo(group_key)
+        self.preset_combos[group_key].set(name)
+
+    def _load_preset(self, group_key):
+        name = self.preset_combos[group_key].get()
+        preset = self.presets.get(group_key, {}).get(name)
+        if not preset:
+            messagebox.showinfo("No preset", "Pick a saved preset to load.")
+            return
+        for p in self._group_paths(group_key):
+            if self._path_key(p) in preset:
+                self.vars[p].set(preset[self._path_key(p)])
+
+    def _delete_preset(self, group_key):
+        name = self.preset_combos[group_key].get()
+        if not name or name not in self.presets.get(group_key, {}):
+            return
+        if not messagebox.askyesno("Delete preset", f"Delete {group_key} preset "
+                                   f"'{name}'?"):
+            return
+        del self.presets[group_key][name]
+        store.save_presets(self.presets)
+        self._refresh_preset_combo(group_key)
+
     def _on_close(self):
         store.save_settings(self._collect_settings())
         self.root.destroy()
@@ -364,7 +428,7 @@ class OptimizerGUI:
 
     def _read_config(self):
         """Build a validated config from the form; raise ValueError listing issues."""
-        cfg = copy.deepcopy(CONFIG)
+        cfg = {"environment": {}, "rocket": {}, "flight": {}, "optimizer": {}}
         errors = []
         values = {}
         objective = self.vars[("optimizer", "objective")].get().strip()
@@ -411,17 +475,14 @@ class OptimizerGUI:
         if errors:
             raise ValueError("Please fix:\n  - " + "\n  - ".join(errors))
 
-        # Commit values into the config structure.
+        # Build the config structure from the validated values.
         for path, value in values.items():
             section, key = path
-            if key == "mass_min":
-                cfg["optimizer"]["mass_bounds"] = (
-                    value, cfg["optimizer"]["mass_bounds"][1])
-            elif key == "mass_max":
-                cfg["optimizer"]["mass_bounds"] = (
-                    cfg["optimizer"]["mass_bounds"][0], value)
-            else:
-                cfg[section][key] = value
+            if key in ("mass_min", "mass_max"):
+                continue  # folded into mass_bounds below
+            cfg[section][key] = value
+        cfg["optimizer"]["mass_bounds"] = (
+            values[("optimizer", "mass_min")], values[("optimizer", "mass_max")])
         return cfg
 
     # --- run optimizer --------------------------------------------------

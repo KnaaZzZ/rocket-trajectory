@@ -14,7 +14,6 @@ vs. mass curve is therefore unimodal, with a maximum in between.
 
 import os
 
-from config import CONFIG
 from simulation import find_motor_files, metrics, run
 
 
@@ -130,15 +129,14 @@ def optimize_mass(config, motor_file, opt=None):
     }
 
 
-def optimize(config=None, motor_files=None, progress=None):
+def optimize(config, motor_files=None, progress=None):
     """Optimize airframe mass for each motor; return configs ranked by score.
 
+    ``config`` is the full parameter dict (built by the GUI from its inputs).
     ``motor_files`` is the list of .eng paths to sweep; if None, the whole
     library is used. ``progress`` is an optional callback(done, total, name)
     invoked after each motor, e.g. to drive a GUI progress bar.
     """
-    config = config or CONFIG
-
     if motor_files is None:
         motor_files = find_motor_files()
     if not motor_files:

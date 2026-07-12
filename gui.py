@@ -41,10 +41,7 @@ from simulation import (  # noqa: E402
 
 OUTPUT_DIR = "output"
 
-APP_NAME = "Apogee"
-APP_TAGLINE = "Rocket Trajectory Optimizer"
-AUTHOR = "Yaroslav"
-APP_TITLE = f"{APP_NAME} — {APP_TAGLINE}"
+APP_TITLE = "Rocket Trajectory Optimizer by Yaroslav Knyazkov"
 
 OBJECTIVES = [
     "apogee", "apogee_time", "max_speed", "max_mach", "max_acceleration",
@@ -95,22 +92,28 @@ class OptimizerGUI:
     def __init__(self, root):
         self.root = root
         root.title(APP_TITLE)
-        root.geometry("1440x820")
-        root.minsize(1200, 700)
+        root.minsize(1100, 680)
+        root.geometry("1440x840")
+        try:
+            root.state("zoomed")  # open maximized on Windows
+        except tk.TclError:
+            try:
+                root.attributes("-zoomed", True)  # X11 fallback
+            except tk.TclError:
+                pass
 
         self.vars = {}          # config path -> tk StringVar
         self.results = []       # last optimize() results, index-aligned to rows
         self.all_motors = {}    # motor name -> .eng path (library + saved + added)
         self.chosen = {}        # motor name -> .eng path (optimizer runs these)
         self.cfg = None         # config used for the currently shown results
-        self.preset_combos = {}  # group key -> ttk.Combobox of preset names
+        self.preset_menus = {}  # group key -> tk.Menu of presets
         self._busy = False
 
         self.presets = store.load_presets()
         self.motor_presets = store.load_motor_presets()
         self.saved_configs = store.load_saved_configs()
         self.settings = store.load_settings()
-        self._build_header()
         self.body = ttk.Frame(root)
         self.body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self._build_config_panel()
@@ -124,31 +127,15 @@ class OptimizerGUI:
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # --- header / branding ----------------------------------------------
-    def _build_header(self):
-        header = ttk.Frame(self.root, padding=(18, 12, 18, 8))
-        header.pack(side=tk.TOP, fill=tk.X)
-
-        title = ttk.Frame(header)
-        title.pack(side=tk.LEFT)
-        ttk.Label(title, text=f"\U0001F680  {APP_NAME}",
-                  font=("Segoe UI Semibold", 20)).pack(anchor=tk.W)
-        ttk.Label(title, text=APP_TAGLINE, font=("Segoe UI", 10),
-                  foreground="#6b7280").pack(anchor=tk.W)
-
-        ttk.Label(header, text=f"by {AUTHOR}", font=("Segoe UI Semibold", 11)
-                  ).pack(side=tk.RIGHT, anchor=tk.S, pady=(0, 2))
-        ttk.Separator(self.root).pack(side=tk.TOP, fill=tk.X)
-
     # --- config panel ---------------------------------------------------
     def _build_config_panel(self):
         left = ttk.Frame(self.body, padding=(12, 10))
         left.pack(side=tk.LEFT, fill=tk.Y)
 
         for group_name, fields in FIELDS:
+            group_key = fields[0][0][0]  # section, e.g. "environment"
             box = ttk.LabelFrame(left, text=group_name, padding=6)
             box.pack(fill=tk.X, pady=3)
-            self._build_preset_row(box, fields[0][0][0])  # group key = section
             for path, label, kind in fields:
                 row = ttk.Frame(box)
                 row.pack(fill=tk.X, pady=1)
@@ -161,22 +148,16 @@ class OptimizerGUI:
                 else:
                     widget = ttk.Entry(row, textvariable=var, width=17)
                 widget.pack(side=tk.RIGHT)
+            self._build_preset_menu(box, group_key)  # compact, below the inputs
 
-    def _build_preset_row(self, box, group_key):
-        """Preset combobox + Save/Load/Delete for one input group."""
-        row = ttk.Frame(box)
-        row.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(row, text="Preset:").pack(side=tk.LEFT)
-        combo = ttk.Combobox(row, state="readonly", width=10)
-        combo.pack(side=tk.LEFT, padx=2)
-        self.preset_combos[group_key] = combo
-        ttk.Button(row, text="Save", width=5,
-                   command=lambda: self._save_preset(group_key)).pack(side=tk.LEFT)
-        ttk.Button(row, text="Load", width=5,
-                   command=lambda: self._load_preset(group_key)).pack(side=tk.LEFT)
-        ttk.Button(row, text="Del", width=4,
-                   command=lambda: self._delete_preset(group_key)).pack(side=tk.LEFT)
-        self._refresh_preset_combo(group_key)
+    def _build_preset_menu(self, box, group_key):
+        """A small 'Presets' menu (load/save/delete) tucked under the inputs."""
+        mb = ttk.Menubutton(box, text="Presets ▾")
+        mb.pack(anchor=tk.E, pady=(2, 0))
+        menu = tk.Menu(mb, tearoff=0)
+        mb["menu"] = menu
+        menu.configure(postcommand=lambda: self._populate_preset_menu(group_key))
+        self.preset_menus[group_key] = menu
 
     # --- motor panel ----------------------------------------------------
     def _build_motor_panel(self):
@@ -411,48 +392,48 @@ class OptimizerGUI:
     def _group_paths(self, group_key):
         return [p for p in self.vars if p[0] == group_key]
 
-    def _refresh_preset_combo(self, group_key):
+    def _populate_preset_menu(self, group_key):
+        """Rebuild a group's preset menu each time it opens."""
+        menu = self.preset_menus[group_key]
+        menu.delete(0, tk.END)
         names = sorted(self.presets.get(group_key, {}))
-        combo = self.preset_combos[group_key]
-        combo["values"] = names
-        if combo.get() not in names:
-            combo.set("")
+        for name in names:
+            menu.add_command(label=f"Load  {name}",
+                             command=lambda n=name: self._load_preset(group_key, n))
+        if names:
+            menu.add_separator()
+        menu.add_command(label="Save current as…",
+                         command=lambda: self._save_preset(group_key))
+        if names:
+            submenu = tk.Menu(menu, tearoff=0)
+            for name in names:
+                submenu.add_command(
+                    label=name, command=lambda n=name: self._delete_preset(group_key, n))
+            menu.add_cascade(label="Delete", menu=submenu)
 
     def _save_preset(self, group_key):
         name = simpledialog.askstring(
             "Save preset", f"Name for this {group_key} preset:", parent=self.root)
-        if not name:
-            return
-        name = name.strip()
-        if not name:
+        if not name or not name.strip():
             return
         values = {self._path_key(p): self.vars[p].get()
                   for p in self._group_paths(group_key)}
-        self.presets.setdefault(group_key, {})[name] = values
+        self.presets.setdefault(group_key, {})[name.strip()] = values
         store.save_presets(self.presets)
-        self._refresh_preset_combo(group_key)
-        self.preset_combos[group_key].set(name)
 
-    def _load_preset(self, group_key):
-        name = self.preset_combos[group_key].get()
+    def _load_preset(self, group_key, name):
         preset = self.presets.get(group_key, {}).get(name)
         if not preset:
-            messagebox.showinfo("No preset", "Pick a saved preset to load.")
             return
         for p in self._group_paths(group_key):
             if self._path_key(p) in preset:
                 self.vars[p].set(preset[self._path_key(p)])
 
-    def _delete_preset(self, group_key):
-        name = self.preset_combos[group_key].get()
-        if not name or name not in self.presets.get(group_key, {}):
-            return
-        if not messagebox.askyesno("Delete preset", f"Delete {group_key} preset "
-                                   f"'{name}'?"):
-            return
-        del self.presets[group_key][name]
-        store.save_presets(self.presets)
-        self._refresh_preset_combo(group_key)
+    def _delete_preset(self, group_key, name):
+        if name in self.presets.get(group_key, {}) and messagebox.askyesno(
+                "Delete preset", f"Delete {group_key} preset '{name}'?"):
+            del self.presets[group_key][name]
+            store.save_presets(self.presets)
 
     def _on_close(self):
         store.save_settings(self._collect_settings())

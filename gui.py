@@ -753,51 +753,136 @@ class AddMotorDialog:
         self.on_success(motor_name(path), path)
 
 
-class RangeSlider(ttk.Frame):
-    """A min + max pair of sliders acting as a double-ended range filter.
+class DualRangeSlider(ttk.Frame):
+    """A single-track slider with two thumbs (min & max) plus min/max entries.
 
-    ``fmt`` formats the numeric endpoints for the label. The sliders keep
-    min <= max. get() returns (low, high).
+    Drag either thumb on the shared track, or type exact values in the entry
+    boxes. ``fmt`` renders a value for the entries; ``parse`` turns entry text
+    back into a value (returns None if invalid); ``snap`` optionally quantizes
+    dragged/typed values (e.g. round for integers). get() returns (low, high).
     """
 
-    def __init__(self, master, lo, hi, on_change, fmt=None):
+    PAD = 10
+    HEIGHT = 26
+    RADIUS = 6
+
+    def __init__(self, master, lo, hi, on_change, fmt=None, parse=None, snap=None):
         super().__init__(master)
         self.lo, self.hi = float(lo), float(hi)
         if self.hi <= self.lo:
-            self.hi = self.lo + 1.0  # avoid a zero-width scale
+            self.hi = self.lo + 1.0
         self.on_change = on_change
         self.fmt = fmt or (lambda v: f"{v:.0f}")
-        self.min_var = tk.DoubleVar(value=self.lo)
-        self.max_var = tk.DoubleVar(value=self.hi)
+        self.parse = parse or self._default_parse
+        self.snap = snap
+        self.low, self.high = self.lo, self.hi
+        self._pxw = 190
+        self._active = None
 
-        self.label = ttk.Label(self)
-        self.label.pack(anchor=tk.W)
-        self._min = ttk.Scale(self, from_=self.lo, to=self.hi, variable=self.min_var,
-                              command=lambda _=None: self._changed(low=True))
-        self._min.pack(fill=tk.X)
-        self._max = ttk.Scale(self, from_=self.lo, to=self.hi, variable=self.max_var,
-                              command=lambda _=None: self._changed(low=False))
-        self._max.pack(fill=tk.X)
-        self._update_label()
+        entries = ttk.Frame(self)
+        entries.pack(fill=tk.X)
+        self.min_var = tk.StringVar()
+        self.max_var = tk.StringVar()
+        me = ttk.Entry(entries, textvariable=self.min_var, width=8)
+        me.pack(side=tk.LEFT)
+        ttk.Label(entries, text="–").pack(side=tk.LEFT, padx=2)
+        xe = ttk.Entry(entries, textvariable=self.max_var, width=8)
+        xe.pack(side=tk.RIGHT)
+        for entry in (me, xe):
+            entry.bind("<Return>", lambda e: self._entries_changed())
+            entry.bind("<FocusOut>", lambda e: self._entries_changed())
 
-    def _changed(self, low):
-        if self.min_var.get() > self.max_var.get():
-            (self.max_var if low else self.min_var).set(
-                self.min_var.get() if low else self.max_var.get())
-        self._update_label()
+        self.canvas = tk.Canvas(self, height=self.HEIGHT, highlightthickness=0)
+        self.canvas.pack(fill=tk.X)
+        self.canvas.bind("<Configure>", self._on_resize)
+        self.canvas.bind("<Button-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_drag)
+
+        self._sync_entries()
+        self.after(0, self._redraw)
+
+    # --- value <-> pixel -------------------------------------------------
+    @staticmethod
+    def _default_parse(text):
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return None
+
+    def _clamp(self, v):
+        if self.snap:
+            v = self.snap(v)
+        return min(max(v, self.lo), self.hi)
+
+    def _x_of(self, v):
+        frac = (v - self.lo) / (self.hi - self.lo)
+        return self.PAD + frac * (self._pxw - 2 * self.PAD)
+
+    def _v_of(self, x):
+        frac = (x - self.PAD) / max(self._pxw - 2 * self.PAD, 1)
+        return self._clamp(self.lo + min(max(frac, 0.0), 1.0) * (self.hi - self.lo))
+
+    # --- drawing / interaction ------------------------------------------
+    def _on_resize(self, event):
+        self._pxw = event.width
+        self._redraw()
+
+    def _redraw(self):
+        c = self.canvas
+        c.delete("all")
+        y = self.HEIGHT // 2
+        xlo, xhi = self._x_of(self.low), self._x_of(self.high)
+        c.create_line(self.PAD, y, self._pxw - self.PAD, y, fill="#aaa", width=3)
+        c.create_line(xlo, y, xhi, y, fill="#3aa76d", width=3)
+        r = self.RADIUS
+        c.create_oval(xlo - r, y - r, xlo + r, y + r, fill="white",
+                      outline="#444", width=2, tags="min")
+        c.create_oval(xhi - r, y - r, xhi + r, y + r, fill="white",
+                      outline="#444", width=2, tags="max")
+
+    def _on_press(self, event):
+        # grab whichever thumb is nearer the click, then move it there
+        self._active = ("min" if abs(event.x - self._x_of(self.low))
+                        <= abs(event.x - self._x_of(self.high)) else "max")
+        self._on_drag(event)
+
+    def _on_drag(self, event):
+        if not self._active:
+            return
+        v = self._v_of(event.x)
+        if self._active == "min":
+            self.low = min(v, self.high)
+        else:
+            self.high = max(v, self.low)
+        self._sync_entries()
+        self._redraw()
         self.on_change()
 
-    def _update_label(self):
-        self.label.config(text=f"{self.fmt(self.min_var.get())}  –  "
-                               f"{self.fmt(self.max_var.get())}")
+    # --- entries ---------------------------------------------------------
+    def _entries_changed(self):
+        lo, hi = self.parse(self.min_var.get()), self.parse(self.max_var.get())
+        if lo is not None:
+            self.low = self._clamp(lo)
+        if hi is not None:
+            self.high = self._clamp(hi)
+        if self.low > self.high:
+            self.low, self.high = self.high, self.low
+        self._sync_entries()
+        self._redraw()
+        self.on_change()
 
+    def _sync_entries(self):
+        self.min_var.set(self.fmt(self.low))
+        self.max_var.set(self.fmt(self.high))
+
+    # --- public ----------------------------------------------------------
     def get(self):
-        return self.min_var.get(), self.max_var.get()
+        return self.low, self.high
 
     def reset(self):
-        self.min_var.set(self.lo)
-        self.max_var.set(self.hi)
-        self._update_label()
+        self.low, self.high = self.lo, self.hi
+        self._sync_entries()
+        self._redraw()
 
 
 class MotorBrowser:
@@ -877,21 +962,25 @@ class MotorBrowser:
             return min(values), max(values)
 
         ttk.Label(side, text="Class").pack(anchor=tk.W, pady=(8, 0))
-        self.class_slider = RangeSlider(
+        self.class_slider = DualRangeSlider(
             side, 0, max(len(self._classes) - 1, 1), self._refresh,
-            fmt=lambda v: self._classes[min(int(round(v)), len(self._classes) - 1)])
+            fmt=lambda v: self._classes[min(int(round(v)), len(self._classes) - 1)],
+            parse=self._parse_class, snap=round)
         self.class_slider.pack(fill=tk.X)
 
         ttk.Label(side, text="Diameter (mm)").pack(anchor=tk.W, pady=(6, 0))
-        self.dia_slider = RangeSlider(side, *bounds("diameter_mm"), self._refresh)
+        self.dia_slider = DualRangeSlider(side, *bounds("diameter_mm"),
+                                          self._refresh, snap=round)
         self.dia_slider.pack(fill=tk.X)
 
         ttk.Label(side, text="Total impulse (Ns)").pack(anchor=tk.W, pady=(6, 0))
-        self.imp_slider = RangeSlider(side, *bounds("total_impulse"), self._refresh)
+        self.imp_slider = DualRangeSlider(side, *bounds("total_impulse"),
+                                          self._refresh, snap=round)
         self.imp_slider.pack(fill=tk.X)
 
         ttk.Label(side, text="Length (mm)").pack(anchor=tk.W, pady=(6, 0))
-        self.len_slider = RangeSlider(side, *bounds("length_mm"), self._refresh)
+        self.len_slider = DualRangeSlider(side, *bounds("length_mm"),
+                                          self._refresh, snap=round)
         self.len_slider.pack(fill=tk.X)
 
         ttk.Button(side, text="Reset filters", command=self._reset_filters).pack(
@@ -953,6 +1042,16 @@ class MotorBrowser:
     @staticmethod
     def _class_order(cls):
         return -1 if cls == "<A" else (ord(cls[0]) if cls and cls[0].isalpha() else 99)
+
+    def _parse_class(self, text):
+        """Class entry accepts a letter (e.g. 'N') or a numeric index."""
+        text = text.strip().upper()
+        if text in self._class_index:
+            return self._class_index[text]
+        try:
+            return float(text)
+        except ValueError:
+            return None
 
     def _reset_filters(self):
         self.search_var.set("")

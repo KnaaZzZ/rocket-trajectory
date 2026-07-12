@@ -35,9 +35,9 @@ from simulation import (  # noqa: E402
     generate_flight_figures,
     metrics,
     motor_catalog,
+    motor_metadata,
     motor_name,
     run,
-    save_motor_files,
     save_motor_text,
     validate_eng_text,
 )
@@ -185,13 +185,6 @@ class OptimizerGUI:
         ttk.Button(btns, text="Clear all", command=self._clear_chosen).pack(
             side=tk.LEFT, expand=True, fill=tk.X)
 
-        actions = ttk.Frame(mid)
-        actions.pack(fill=tk.X)
-        ttk.Button(actions, text="Add new motor…",
-                   command=self._add_new_motor).pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(actions, text="Save to saved/",
-                   command=self._save_chosen).pack(side=tk.LEFT, expand=True, fill=tk.X)
-
         preset = ttk.Frame(mid)
         preset.pack(fill=tk.X, pady=(4, 0))
         ttk.Label(preset, text="Motor preset:").pack(side=tk.LEFT)
@@ -287,23 +280,6 @@ class OptimizerGUI:
             self.chosen_list.insert(tk.END, name)
         self.chosen_label.config(
             text=f"Chosen (optimizer runs these): {len(self.chosen)}")
-
-    def _save_chosen(self):
-        if not self.chosen:
-            messagebox.showinfo("Nothing to save", "Choose some motors first.")
-            return
-        paths = save_motor_files(list(self.chosen.values()), SAVED_DIR)
-        messagebox.showinfo("Saved",
-                            f"Saved {len(paths)} motor(s) to {SAVED_DIR}/.")
-
-    def _add_new_motor(self):
-        AddMotorDialog(self.root, self._on_new_motor)
-
-    def _on_new_motor(self, name, path):
-        """Called by the dialog once a new motor is validated and on disk."""
-        self.all_motors[name] = path
-        self.chosen[name] = path
-        self._refresh_chosen()
 
     # --- motor presets (named sets of chosen motors) --------------------
     def _refresh_motor_preset_combo(self):
@@ -777,6 +753,53 @@ class AddMotorDialog:
         self.on_success(motor_name(path), path)
 
 
+class RangeSlider(ttk.Frame):
+    """A min + max pair of sliders acting as a double-ended range filter.
+
+    ``fmt`` formats the numeric endpoints for the label. The sliders keep
+    min <= max. get() returns (low, high).
+    """
+
+    def __init__(self, master, lo, hi, on_change, fmt=None):
+        super().__init__(master)
+        self.lo, self.hi = float(lo), float(hi)
+        if self.hi <= self.lo:
+            self.hi = self.lo + 1.0  # avoid a zero-width scale
+        self.on_change = on_change
+        self.fmt = fmt or (lambda v: f"{v:.0f}")
+        self.min_var = tk.DoubleVar(value=self.lo)
+        self.max_var = tk.DoubleVar(value=self.hi)
+
+        self.label = ttk.Label(self)
+        self.label.pack(anchor=tk.W)
+        self._min = ttk.Scale(self, from_=self.lo, to=self.hi, variable=self.min_var,
+                              command=lambda _=None: self._changed(low=True))
+        self._min.pack(fill=tk.X)
+        self._max = ttk.Scale(self, from_=self.lo, to=self.hi, variable=self.max_var,
+                              command=lambda _=None: self._changed(low=False))
+        self._max.pack(fill=tk.X)
+        self._update_label()
+
+    def _changed(self, low):
+        if self.min_var.get() > self.max_var.get():
+            (self.max_var if low else self.min_var).set(
+                self.min_var.get() if low else self.max_var.get())
+        self._update_label()
+        self.on_change()
+
+    def _update_label(self):
+        self.label.config(text=f"{self.fmt(self.min_var.get())}  –  "
+                               f"{self.fmt(self.max_var.get())}")
+
+    def get(self):
+        return self.min_var.get(), self.max_var.get()
+
+    def reset(self):
+        self.min_var.set(self.lo)
+        self.max_var.set(self.hi)
+        self._update_label()
+
+
 class MotorBrowser:
     """OpenRocket-style motor browser: search, side filters, sortable columns.
 
@@ -821,56 +844,65 @@ class MotorBrowser:
         side.pack(side=tk.LEFT, fill=tk.Y)
         ttk.Label(side, text="Filters", font=("", 10, "bold")).pack(anchor=tk.W)
 
+        # Search --------------------------------------------------------
         self.search_var = tk.StringVar()
-        self.manuf_var = tk.StringVar(value="All")
-        self.class_var = tk.StringVar(value="All")
-        self.dia_var = tk.StringVar(value="All")
-        self.imin_var = tk.StringVar()
-        self.imax_var = tk.StringVar()
-        self.lmin_var = tk.StringVar()
-        self.lmax_var = tk.StringVar()
-
-        def labeled(text):
-            ttk.Label(side, text=text).pack(anchor=tk.W, pady=(6, 0))
-
-        labeled("Search")
-        e = ttk.Entry(side, textvariable=self.search_var, width=22)
-        e.pack(fill=tk.X)
+        ttk.Label(side, text="Search").pack(anchor=tk.W, pady=(6, 0))
+        ttk.Entry(side, textvariable=self.search_var, width=24).pack(fill=tk.X)
         self.search_var.trace_add("write", lambda *a: self._refresh())
 
-        manufacturers = ["All"] + sorted({r["manufacturer"] for r in self.catalog})
-        classes = ["All"] + sorted({r["impulse_class"] for r in self.catalog},
-                                   key=self._class_order)
-        diameters = ["All"] + [f"{d:.0f}" for d in
-                               sorted({r["diameter_mm"] for r in self.catalog})]
-        for text, var, values in [
-            ("Manufacturer", self.manuf_var, manufacturers),
-            ("Class", self.class_var, classes),
-            ("Diameter (mm)", self.dia_var, diameters),
-        ]:
-            labeled(text)
-            combo = ttk.Combobox(side, textvariable=var, values=values,
-                                 state="readonly", width=20)
-            combo.pack(fill=tk.X)
-            combo.bind("<<ComboboxSelected>>", lambda e: self._refresh())
+        # Manufacturers: multi-checkbox --------------------------------
+        ttk.Label(side, text="Manufacturers").pack(anchor=tk.W, pady=(8, 0))
+        self.manuf_vars = {}
+        mbox = ttk.Frame(side)
+        mbox.pack(fill=tk.X)
+        for m in sorted({r["manufacturer"] for r in self.catalog}):
+            var = tk.BooleanVar(value=True)
+            self.manuf_vars[m] = var
+            ttk.Checkbutton(mbox, text=m, variable=var,
+                            command=self._refresh).pack(anchor=tk.W)
+        toggles = ttk.Frame(side)
+        toggles.pack(fill=tk.X)
+        ttk.Button(toggles, text="All", width=5,
+                   command=lambda: self._set_all_manufacturers(True)).pack(side=tk.LEFT)
+        ttk.Button(toggles, text="None", width=6,
+                   command=lambda: self._set_all_manufacturers(False)).pack(side=tk.LEFT)
 
-        labeled("Impulse (Ns): min / max")
-        rng = ttk.Frame(side)
-        rng.pack(fill=tk.X)
-        ttk.Entry(rng, textvariable=self.imin_var, width=9).pack(side=tk.LEFT)
-        ttk.Entry(rng, textvariable=self.imax_var, width=9).pack(side=tk.LEFT, padx=2)
-        labeled("Length (mm): min / max")
-        rng2 = ttk.Frame(side)
-        rng2.pack(fill=tk.X)
-        ttk.Entry(rng2, textvariable=self.lmin_var, width=9).pack(side=tk.LEFT)
-        ttk.Entry(rng2, textvariable=self.lmax_var, width=9).pack(side=tk.LEFT, padx=2)
-        for var in (self.imin_var, self.imax_var, self.lmin_var, self.lmax_var):
-            var.trace_add("write", lambda *a: self._refresh())
+        # Range sliders for class / diameter / impulse / length --------
+        self._classes = sorted({r["impulse_class"] for r in self.catalog},
+                               key=self._class_order)
+        self._class_index = {c: i for i, c in enumerate(self._classes)}
+
+        def bounds(key):
+            values = [r[key] for r in self.catalog] or [0.0]
+            return min(values), max(values)
+
+        ttk.Label(side, text="Class").pack(anchor=tk.W, pady=(8, 0))
+        self.class_slider = RangeSlider(
+            side, 0, max(len(self._classes) - 1, 1), self._refresh,
+            fmt=lambda v: self._classes[min(int(round(v)), len(self._classes) - 1)])
+        self.class_slider.pack(fill=tk.X)
+
+        ttk.Label(side, text="Diameter (mm)").pack(anchor=tk.W, pady=(6, 0))
+        self.dia_slider = RangeSlider(side, *bounds("diameter_mm"), self._refresh)
+        self.dia_slider.pack(fill=tk.X)
+
+        ttk.Label(side, text="Total impulse (Ns)").pack(anchor=tk.W, pady=(6, 0))
+        self.imp_slider = RangeSlider(side, *bounds("total_impulse"), self._refresh)
+        self.imp_slider.pack(fill=tk.X)
+
+        ttk.Label(side, text="Length (mm)").pack(anchor=tk.W, pady=(6, 0))
+        self.len_slider = RangeSlider(side, *bounds("length_mm"), self._refresh)
+        self.len_slider.pack(fill=tk.X)
 
         ttk.Button(side, text="Reset filters", command=self._reset_filters).pack(
             fill=tk.X, pady=(10, 0))
         self.count_label = ttk.Label(side, text="")
         self.count_label.pack(anchor=tk.W, pady=(8, 0))
+
+    def _set_all_manufacturers(self, value):
+        for var in self.manuf_vars.values():
+            var.set(value)
+        self._refresh()
 
     def _build_table(self):
         frame = ttk.Frame(self.win, padding=(0, 8))
@@ -892,54 +924,61 @@ class MotorBrowser:
     def _build_footer(self):
         bar = ttk.Frame(self.win, padding=8)
         bar.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Button(bar, text="New motor…", command=self._add_new_motor).pack(
+            side=tk.LEFT)
         self.status = ttk.Label(bar, text="")
-        self.status.pack(side=tk.LEFT)
+        self.status.pack(side=tk.LEFT, padx=8)
         ttk.Button(bar, text="Close", command=self.win.destroy).pack(side=tk.RIGHT)
         ttk.Button(bar, text="Add all shown", command=self._add_all_shown).pack(
             side=tk.RIGHT, padx=4)
         ttk.Button(bar, text="Add selected", command=self._add_selected).pack(
             side=tk.RIGHT)
 
+    def _add_new_motor(self):
+        AddMotorDialog(self.win, self._on_new_motor)
+
+    def _on_new_motor(self, name, path):
+        """A pasted/loaded motor was validated and saved; catalog it and add it."""
+        try:
+            record = motor_metadata(path)
+        except (ValueError, IndexError, OSError) as exc:
+            messagebox.showerror("Motor error", str(exc), parent=self.win)
+            return
+        self.catalog.append(record)
+        self._refresh()
+        self.on_add([record])
+        self.status.config(text=f"Added new motor '{name}'.")
+
     # --- behavior -------------------------------------------------------
     @staticmethod
     def _class_order(cls):
         return -1 if cls == "<A" else (ord(cls[0]) if cls and cls[0].isalpha() else 99)
 
-    @staticmethod
-    def _to_float(text):
-        try:
-            return float(text)
-        except (TypeError, ValueError):
-            return None
-
     def _reset_filters(self):
         self.search_var.set("")
-        self.manuf_var.set("All")
-        self.class_var.set("All")
-        self.dia_var.set("All")
-        for var in (self.imin_var, self.imax_var, self.lmin_var, self.lmax_var):
-            var.set("")
+        self._set_all_manufacturers(True)  # also refreshes
+        for slider in (self.class_slider, self.dia_slider, self.imp_slider,
+                       self.len_slider):
+            slider.reset()
+        self._refresh()
 
     def _passes(self, r):
         text = self.search_var.get().strip().lower()
         if text and text not in f"{r['manufacturer']} {r['designation']} {r['name']}".lower():
             return False
-        if self.manuf_var.get() != "All" and r["manufacturer"] != self.manuf_var.get():
+        var = self.manuf_vars.get(r["manufacturer"])
+        if var is not None and not var.get():  # unknown manufacturers pass
             return False
-        if self.class_var.get() != "All" and r["impulse_class"] != self.class_var.get():
+        clo, chi = self.class_slider.get()
+        cidx = self._class_index.get(r["impulse_class"], -1)
+        if not (round(clo) <= cidx <= round(chi)):
             return False
-        if self.dia_var.get() != "All" and f"{r['diameter_mm']:.0f}" != self.dia_var.get():
-            return False
-        imin, imax = self._to_float(self.imin_var.get()), self._to_float(self.imax_var.get())
-        if imin is not None and r["total_impulse"] < imin:
-            return False
-        if imax is not None and r["total_impulse"] > imax:
-            return False
-        lmin, lmax = self._to_float(self.lmin_var.get()), self._to_float(self.lmax_var.get())
-        if lmin is not None and r["length_mm"] < lmin:
-            return False
-        if lmax is not None and r["length_mm"] > lmax:
-            return False
+        for slider, key in [(self.dia_slider, "diameter_mm"),
+                            (self.imp_slider, "total_impulse"),
+                            (self.len_slider, "length_mm")]:
+            lo, hi = slider.get()
+            if not (lo <= r[key] <= hi):
+                return False
         return True
 
     def _sort_by(self, col):

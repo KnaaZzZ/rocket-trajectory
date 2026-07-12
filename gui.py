@@ -39,7 +39,7 @@ from simulation import (  # noqa: E402
     validate_eng_text,
 )
 
-OUTPUT_DIR = "output"
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
 APP_TITLE = "Rocket Trajectory Optimizer by Yaroslav Knyazkov"
 

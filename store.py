@@ -9,11 +9,15 @@ import json
 import os
 import time
 
-SETTINGS_FILE = "gui_state.json"
-PRESETS_FILE = "presets.json"
-MOTOR_PRESETS_FILE = "motor_presets.json"
-CONFIGS_FILE = "saved_configs.json"
-RESULTS_DIR = "data/results"
+# Anchor persistence to this file's folder so history survives regardless of the
+# working directory the app is launched from.
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+SETTINGS_FILE = os.path.join(_BASE_DIR, "gui_state.json")
+PRESETS_FILE = os.path.join(_BASE_DIR, "presets.json")
+MOTOR_PRESETS_FILE = os.path.join(_BASE_DIR, "motor_presets.json")
+CONFIGS_FILE = os.path.join(_BASE_DIR, "saved_configs.json")
+RESULTS_DIR = os.path.join(_BASE_DIR, "data", "results")
 
 
 # --- settings -----------------------------------------------------------

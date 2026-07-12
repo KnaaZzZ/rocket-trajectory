@@ -17,9 +17,14 @@ import shutil
 
 from rocketpy import Environment, Flight, PointMassMotor, PointMassRocket
 
+# Anchor data paths to this file's folder so they work regardless of the
+# process's current working directory (launching from any cwd finds them).
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(_BASE_DIR, "data")
+
 # Full downloaded motor library (source) and the user's saved working set.
-LIBRARY_DIR = "data/library"
-SAVED_DIR = "data/saved"
+LIBRARY_DIR = os.path.join(DATA_DIR, "library")
+SAVED_DIR = os.path.join(DATA_DIR, "saved")
 MOTORS_DIR = LIBRARY_DIR  # default directory the optimizer/run() fall back to
 
 

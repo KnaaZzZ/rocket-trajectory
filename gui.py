@@ -77,14 +77,14 @@ FIELDS = [
 ]
 
 TABLE_COLUMNS = [
-    ("rank", "#", 36),
-    ("motor", "Motor", 170),
-    ("mass", "Mass (kg)", 75),
-    ("apogee", "Apogee (m)", 90),
-    ("apogee_time", "Apo t (s)", 70),
-    ("max_speed", "MaxV (m/s)", 80),
-    ("max_mach", "Max Mach", 75),
-    ("max_acceleration", "MaxAcc (m/s^2)", 100),
+    ("rank", "#", 40),
+    ("motor", "Motor", 180),
+    ("mass", "Mass (kg)", 90),
+    ("apogee", "Apogee (m)", 100),
+    ("apogee_time", "Apogee Time (s)", 110),
+    ("max_speed", "Maximum Speed (m/s)", 150),
+    ("max_mach", "Maximum Mach", 120),
+    ("max_acceleration", "Maximum Acceleration (m/s²)", 200),
 ]
 
 
@@ -92,15 +92,8 @@ class OptimizerGUI:
     def __init__(self, root):
         self.root = root
         root.title(APP_TITLE)
-        root.minsize(1100, 680)
-        root.geometry("1440x840")
-        try:
-            root.state("zoomed")  # open maximized on Windows
-        except tk.TclError:
-            try:
-                root.attributes("-zoomed", True)  # X11 fallback
-            except tk.TclError:
-                pass
+        root.minsize(1000, 640)
+        root.geometry("1360x800")
 
         self.vars = {}          # config path -> tk StringVar
         self.results = []       # last optimize() results, index-aligned to rows
@@ -164,7 +157,7 @@ class OptimizerGUI:
         mid = ttk.Frame(self.body, padding=(12, 10))
         mid.pack(side=tk.LEFT, fill=tk.Y)
 
-        ttk.Label(mid, text="Motors", font=("Segoe UI Semibold", 11)).pack(anchor=tk.W)
+        ttk.Label(mid, text="Motors", font=("", 10, "bold")).pack(anchor=tk.W)
         ttk.Button(mid, text="Choose motors…  (browse library)",
                    command=self._open_motor_browser).pack(fill=tk.X, pady=(2, 4))
 
@@ -172,12 +165,8 @@ class OptimizerGUI:
         self.chosen_label.pack(anchor=tk.W)
         chosen_box = ttk.Frame(mid)
         chosen_box.pack(fill=tk.BOTH, expand=True)
-        self.chosen_list = tk.Listbox(
-            chosen_box, selectmode=tk.EXTENDED, width=32, height=16,
-            exportselection=False, activestyle="none", relief=tk.FLAT,
-            borderwidth=0, highlightthickness=1, highlightbackground="#d0d0d0",
-            font=("Segoe UI", 10), selectbackground="#0067c0",
-            selectforeground="white")
+        self.chosen_list = tk.Listbox(chosen_box, selectmode=tk.EXTENDED, width=32,
+                                      height=16, exportselection=False)
         csb = ttk.Scrollbar(chosen_box, command=self.chosen_list.yview)
         self.chosen_list.config(yscrollcommand=csb.set)
         self.chosen_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -211,12 +200,11 @@ class OptimizerGUI:
 
         top = ttk.Frame(right)
         top.pack(fill=tk.X)
-        self.run_btn = ttk.Button(top, text="Run Optimizer", command=self.on_run,
-                                  style="Accent.TButton")
+        self.run_btn = ttk.Button(top, text="Run Optimizer", command=self.on_run)
         self.run_btn.pack(side=tk.LEFT)
         ttk.Button(top, text="Clear inputs", command=self.on_clear).pack(
             side=tk.LEFT, padx=(6, 0))
-        self.status = ttk.Label(top, text="Ready", foreground="#6b7280")
+        self.status = ttk.Label(top, text="Ready", foreground="gray")
         self.status.pack(side=tk.LEFT, padx=8)
         self.progress = ttk.Progressbar(right, mode="determinate")
         self.progress.pack(fill=tk.X, pady=4)
@@ -232,12 +220,21 @@ class OptimizerGUI:
 
         ttk.Label(right, text="Configurations (ranked by objective)",
                   font=("", 11, "bold")).pack(anchor=tk.W)
+        table = ttk.Frame(right)
+        table.pack(fill=tk.BOTH, expand=True, pady=6)
         cols = [c[0] for c in TABLE_COLUMNS]
-        self.tree = ttk.Treeview(right, columns=cols, show="headings", height=20)
+        self.tree = ttk.Treeview(table, columns=cols, show="headings", height=20)
         for key, heading, width in TABLE_COLUMNS:
             self.tree.heading(key, text=heading)
             self.tree.column(key, width=width, anchor=tk.W if key == "motor" else tk.E)
-        self.tree.pack(fill=tk.BOTH, expand=True, pady=6)
+        vsb = ttk.Scrollbar(table, orient=tk.VERTICAL, command=self.tree.yview)
+        hsb = ttk.Scrollbar(table, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        table.rowconfigure(0, weight=1)
+        table.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", lambda e: self.on_show_details())
 
         actions = ttk.Frame(right)
@@ -921,8 +918,11 @@ class DualRangeSlider(ttk.Frame):
 
     # --- drawing / interaction ------------------------------------------
     def _on_resize(self, event):
+        # Debounce: coalesce the redraw so dragging the window edge isn't laggy.
         self._pxw = event.width
-        self._redraw()
+        if getattr(self, "_resize_job", None):
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(30, self._redraw)
 
     def _redraw(self):
         c = self.canvas
@@ -991,14 +991,14 @@ class MotorBrowser:
 
     # (key, heading, width, kind). kind drives sorting/formatting.
     COLUMNS = [
-        ("manufacturer", "Manufacturer", 95, "text"),
-        ("designation", "Motor", 135, "text"),
-        ("impulse_class", "Class", 46, "class"),
-        ("total_impulse", "Impulse (Ns)", 90, "num0"),
-        ("avg_thrust", "Avg (N)", 70, "num0"),
-        ("diameter_mm", "Dia (mm)", 70, "num0"),
-        ("length_mm", "Len (mm)", 70, "num0"),
-        ("burn_time", "Burn (s)", 60, "num2"),
+        ("manufacturer", "Manufacturer", 110, "text"),
+        ("designation", "Motor", 150, "text"),
+        ("impulse_class", "Class", 60, "class"),
+        ("total_impulse", "Total Impulse (Ns)", 130, "num0"),
+        ("avg_thrust", "Average Thrust (N)", 130, "num0"),
+        ("diameter_mm", "Diameter (mm)", 110, "num0"),
+        ("length_mm", "Length (mm)", 100, "num0"),
+        ("burn_time", "Burn Time (s)", 100, "num2"),
     ]
     _NUMERIC = {"total_impulse", "avg_thrust", "diameter_mm", "length_mm", "burn_time"}
 
@@ -1020,13 +1020,16 @@ class MotorBrowser:
 
         self.win = tk.Toplevel(parent)
         self.win.title("Choose motors")
-        self.win.geometry("1040x760")
+        self.win.geometry("1180x700")
+        self.win.minsize(900, 560)
         self.win.transient(parent)
         self.win.grab_set()
 
+        # Footer first so it reserves the bottom strip (full width); otherwise
+        # the left-packed filters/table push the Add/Close buttons off-screen.
+        self._build_footer()
         self._build_filters()
         self._build_tables()
-        self._build_footer()
         self._refresh()
 
     # --- widgets --------------------------------------------------------
@@ -1280,7 +1283,7 @@ class MotorBrowser:
         self.count_label.config(text=f"{len(self._shown[source])} of {total} shown")
 
     def _update_delete_state(self):
-        if hasattr(self, "delete_btn"):
+        if hasattr(self, "delete_btn") and hasattr(self, "notebook"):
             self.delete_btn.config(
                 state=tk.NORMAL if self._active_source() == "saved" else tk.DISABLED)
 
@@ -1329,32 +1332,8 @@ class MotorBrowser:
         self.status.config(text=f"Deleted {len(names)} motor(s).")
 
 
-def apply_theme(root):
-    """Apply the modern Sun Valley theme (if available) plus a few tweaks."""
-    try:
-        import sv_ttk
-        sv_ttk.set_theme("light")
-    except Exception:
-        # Fall back to a cleaner built-in theme.
-        try:
-            ttk.Style().theme_use("clam")
-        except tk.TclError:
-            pass
-    try:
-        import tkinter.font as tkfont
-        default = tkfont.nametofont("TkDefaultFont")
-        default.configure(family="Segoe UI", size=10)
-        root.option_add("*Font", default)
-    except tk.TclError:
-        pass
-    style = ttk.Style()
-    style.configure("Treeview", rowheight=26)               # roomier rows
-    style.configure("Treeview.Heading", font=("Segoe UI Semibold", 9))
-
-
 def main():
     root = tk.Tk()
-    apply_theme(root)
     OptimizerGUI(root)
     root.mainloop()
 

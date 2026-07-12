@@ -268,7 +268,7 @@ class OptimizerGUI:
                 self.all_motors.setdefault(motor_name(path), path)
 
     def _open_motor_browser(self):
-        MotorBrowser(self.root, self._add_records)
+        MotorBrowser(self.root, self._add_records, self._remove_motor_names)
 
     def _add_records(self, records):
         """Add motor metadata records (from the browser) to the chosen set."""
@@ -276,6 +276,13 @@ class OptimizerGUI:
             name = r["name"]
             self.all_motors.setdefault(name, r["path"])
             self.chosen[name] = r["path"]
+        self._refresh_chosen()
+
+    def _remove_motor_names(self, names):
+        """A saved motor was deleted in the browser; drop it from the chosen set."""
+        for name in names:
+            self.chosen.pop(name, None)
+            self.all_motors.pop(name, None)
         self._refresh_chosen()
 
     def _add_names(self, names):
@@ -995,12 +1002,21 @@ class MotorBrowser:
     ]
     _NUMERIC = {"total_impulse", "avg_thrust", "diameter_mm", "length_mm", "burn_time"}
 
-    def __init__(self, parent, on_add):
+    def __init__(self, parent, on_add, on_delete=None):
         self.on_add = on_add
+        self.on_delete = on_delete
         self.catalog = motor_catalog()
+        saved_abs = os.path.abspath(SAVED_DIR)
+        for r in self.catalog:  # tag each motor with its source directory
+            r["source"] = ("saved"
+                           if os.path.abspath(r["path"]).startswith(saved_abs)
+                           else "library")
+        self.library_records = [r for r in self.catalog if r["source"] == "library"]
+        self.saved_records = [r for r in self.catalog if r["source"] == "saved"]
+        self._sources = ["library", "saved"]
         self.sort_col = "manufacturer"
         self.sort_reverse = False
-        self._shown = []
+        self._shown = {"library": [], "saved": []}
 
         self.win = tk.Toplevel(parent)
         self.win.title("Choose motors")
@@ -1009,7 +1025,7 @@ class MotorBrowser:
         self.win.grab_set()
 
         self._build_filters()
-        self._build_table()
+        self._build_tables()
         self._build_footer()
         self._refresh()
 
@@ -1103,28 +1119,48 @@ class MotorBrowser:
             var.set(value)
         self._refresh()
 
-    def _build_table(self):
-        frame = ttk.Frame(self.win, padding=(0, 8))
-        frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    def _build_tables(self):
+        container = ttk.Frame(self.win, padding=(0, 8))
+        container.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.notebook = ttk.Notebook(container)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        titles = {"library": "ThrustCurve library", "saved": "My saved motors"}
         cols = [c[0] for c in self.COLUMNS]
-        self.tree = ttk.Treeview(frame, columns=cols, show="headings",
-                                 selectmode=tk.EXTENDED)
-        for key, heading, width, kind in self.COLUMNS:
-            self.tree.heading(key, text=heading,
-                              command=lambda k=key: self._sort_by(k))
-            self.tree.column(key, width=width,
-                             anchor=tk.W if kind == "text" else tk.E)
-        vsb = ttk.Scrollbar(frame, command=self.tree.yview)
-        self.tree.config(yscrollcommand=vsb.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.bind("<Double-1>", lambda e: self._add_selected())
+        self.tables = {}
+        for source in self._sources:
+            tab = ttk.Frame(self.notebook)
+            self.notebook.add(tab, text=titles[source])
+            tree = ttk.Treeview(tab, columns=cols, show="headings",
+                                selectmode=tk.EXTENDED)
+            for key, heading, width, kind in self.COLUMNS:
+                tree.heading(key, text=heading,
+                             command=lambda k=key: self._sort_by(k))
+                tree.column(key, width=width,
+                            anchor=tk.W if kind == "text" else tk.E)
+            vsb = ttk.Scrollbar(tab, command=tree.yview)
+            tree.config(yscrollcommand=vsb.set)
+            tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            vsb.pack(side=tk.RIGHT, fill=tk.Y)
+            tree.bind("<Double-1>", lambda e: self._add_selected())
+            self.tables[source] = tree
+        self.notebook.bind("<<NotebookTabChanged>>",
+                           lambda e: self._on_tab_changed())
+
+    def _active_source(self):
+        return self._sources[self.notebook.index("current")]
+
+    def _on_tab_changed(self):
+        self._update_count()
+        self._update_delete_state()
 
     def _build_footer(self):
         bar = ttk.Frame(self.win, padding=8)
         bar.pack(side=tk.BOTTOM, fill=tk.X)
         ttk.Button(bar, text="New motor…", command=self._add_new_motor).pack(
             side=tk.LEFT)
+        self.delete_btn = ttk.Button(bar, text="Delete selected",
+                                     command=self._delete_selected)
+        self.delete_btn.pack(side=tk.LEFT, padx=6)
         self.status = ttk.Label(bar, text="")
         self.status.pack(side=tk.LEFT, padx=8)
         ttk.Button(bar, text="Close", command=self.win.destroy).pack(side=tk.RIGHT)
@@ -1132,6 +1168,7 @@ class MotorBrowser:
             side=tk.RIGHT, padx=4)
         ttk.Button(bar, text="Add selected", command=self._add_selected).pack(
             side=tk.RIGHT)
+        self._update_delete_state()
 
     def _add_new_motor(self):
         AddMotorDialog(self.win, self._on_new_motor)
@@ -1143,8 +1180,11 @@ class MotorBrowser:
         except (ValueError, IndexError, OSError) as exc:
             messagebox.showerror("Motor error", str(exc), parent=self.win)
             return
+        record["source"] = "saved"
         self.catalog.append(record)
+        self.saved_records.append(record)
         self._refresh()
+        self.notebook.select(self._sources.index("saved"))  # show it on the Saved tab
         self.on_add([record])
         self.status.config(text=f"Added new motor '{name}'.")
 
@@ -1220,12 +1260,29 @@ class MotorBrowser:
         return out
 
     def _refresh(self):
-        self._shown = sorted((r for r in self.catalog if self._passes(r)),
-                             key=self._sort_key, reverse=self.sort_reverse)
-        self.tree.delete(*self.tree.get_children())
-        for i, r in enumerate(self._shown):
-            self.tree.insert("", tk.END, iid=str(i), values=self._format(r))
-        self.count_label.config(text=f"{len(self._shown)} of {len(self.catalog)} motors")
+        for source in self._sources:
+            records = (self.library_records if source == "library"
+                       else self.saved_records)
+            shown = sorted((r for r in records if self._passes(r)),
+                           key=self._sort_key, reverse=self.sort_reverse)
+            self._shown[source] = shown
+            tree = self.tables[source]
+            tree.delete(*tree.get_children())
+            for i, r in enumerate(shown):
+                tree.insert("", tk.END, iid=str(i), values=self._format(r))
+        self._update_count()
+        self._update_delete_state()
+
+    def _update_count(self):
+        source = self._active_source()
+        total = len(self.library_records if source == "library"
+                    else self.saved_records)
+        self.count_label.config(text=f"{len(self._shown[source])} of {total} shown")
+
+    def _update_delete_state(self):
+        if hasattr(self, "delete_btn"):
+            self.delete_btn.config(
+                state=tk.NORMAL if self._active_source() == "saved" else tk.DISABLED)
 
     def _add_records(self, records):
         if not records:
@@ -1235,10 +1292,41 @@ class MotorBrowser:
         self.status.config(text=f"Added {len(records)} motor(s).")
 
     def _add_selected(self):
-        self._add_records([self._shown[int(i)] for i in self.tree.selection()])
+        source = self._active_source()
+        tree = self.tables[source]
+        self._add_records([self._shown[source][int(i)] for i in tree.selection()])
 
     def _add_all_shown(self):
-        self._add_records(list(self._shown))
+        self._add_records(list(self._shown[self._active_source()]))
+
+    def _delete_selected(self):
+        """Delete the selected saved motors from disk (library motors can't be)."""
+        tree = self.tables["saved"]
+        records = [self._shown["saved"][int(i)] for i in tree.selection()]
+        if not records:
+            messagebox.showinfo("No selection", "Select saved motors to delete.",
+                                parent=self.win)
+            return
+        if not messagebox.askyesno(
+                "Delete motors",
+                f"Delete {len(records)} saved motor(s) from disk? This cannot be undone.",
+                parent=self.win):
+            return
+        names = []
+        for r in records:
+            try:
+                os.remove(r["path"])
+            except OSError:
+                pass
+            if r in self.catalog:
+                self.catalog.remove(r)
+            if r in self.saved_records:
+                self.saved_records.remove(r)
+            names.append(r["name"])
+        if self.on_delete:
+            self.on_delete(names)  # let the main window drop them from Chosen
+        self._refresh()
+        self.status.config(text=f"Deleted {len(names)} motor(s).")
 
 
 def apply_theme(root):

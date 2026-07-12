@@ -914,7 +914,7 @@ class MotorBrowser:
 
         self.win = tk.Toplevel(parent)
         self.win.title("Choose motors")
-        self.win.geometry("960x620")
+        self.win.geometry("1040x760")
         self.win.transient(parent)
         self.win.grab_set()
 
@@ -925,34 +925,49 @@ class MotorBrowser:
 
     # --- widgets --------------------------------------------------------
     def _build_filters(self):
-        side = ttk.Frame(self.win, padding=8)
-        side.pack(side=tk.LEFT, fill=tk.Y)
-        ttk.Label(side, text="Filters", font=("", 10, "bold")).pack(anchor=tk.W)
+        # Scrollable side panel so the filters never get cramped.
+        outer = ttk.Frame(self.win, padding=(8, 8, 2, 8))
+        outer.pack(side=tk.LEFT, fill=tk.Y)
+        canvas = tk.Canvas(outer, width=236, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.Y)
+        side = ttk.Frame(canvas, padding=(0, 0, 8, 0))
+        win_id = canvas.create_window((0, 0), window=side, anchor="nw")
+        side.bind("<Configure>",
+                  lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+        ttk.Label(side, text="Filters", font=("", 11, "bold")).pack(anchor=tk.W)
 
         # Search --------------------------------------------------------
+        ttk.Label(side, text="Search").pack(anchor=tk.W, pady=(10, 0))
         self.search_var = tk.StringVar()
-        ttk.Label(side, text="Search").pack(anchor=tk.W, pady=(6, 0))
-        ttk.Entry(side, textvariable=self.search_var, width=24).pack(fill=tk.X)
+        ttk.Entry(side, textvariable=self.search_var).pack(fill=tk.X)
         self.search_var.trace_add("write", lambda *a: self._refresh())
 
         # Manufacturers: multi-checkbox --------------------------------
-        ttk.Label(side, text="Manufacturers").pack(anchor=tk.W, pady=(8, 0))
+        ttk.Separator(side).pack(fill=tk.X, pady=10)
+        header = ttk.Frame(side)
+        header.pack(fill=tk.X)
+        ttk.Label(header, text="Manufacturers").pack(side=tk.LEFT)
+        ttk.Button(header, text="None", width=5,
+                   command=lambda: self._set_all_manufacturers(False)).pack(side=tk.RIGHT)
+        ttk.Button(header, text="All", width=4,
+                   command=lambda: self._set_all_manufacturers(True)).pack(side=tk.RIGHT)
         self.manuf_vars = {}
-        mbox = ttk.Frame(side)
-        mbox.pack(fill=tk.X)
         for m in sorted({r["manufacturer"] for r in self.catalog}):
             var = tk.BooleanVar(value=True)
             self.manuf_vars[m] = var
-            ttk.Checkbutton(mbox, text=m, variable=var,
+            ttk.Checkbutton(side, text=m, variable=var,
                             command=self._refresh).pack(anchor=tk.W)
-        toggles = ttk.Frame(side)
-        toggles.pack(fill=tk.X)
-        ttk.Button(toggles, text="All", width=5,
-                   command=lambda: self._set_all_manufacturers(True)).pack(side=tk.LEFT)
-        ttk.Button(toggles, text="None", width=6,
-                   command=lambda: self._set_all_manufacturers(False)).pack(side=tk.LEFT)
 
-        # Range sliders for class / diameter / impulse / length --------
+        # Range sliders -------------------------------------------------
+        ttk.Separator(side).pack(fill=tk.X, pady=10)
+        ttk.Label(side, text="Ranges").pack(anchor=tk.W)
         self._classes = sorted({r["impulse_class"] for r in self.catalog},
                                key=self._class_order)
         self._class_index = {c: i for i, c in enumerate(self._classes)}
@@ -961,30 +976,35 @@ class MotorBrowser:
             values = [r[key] for r in self.catalog] or [0.0]
             return min(values), max(values)
 
-        ttk.Label(side, text="Class").pack(anchor=tk.W, pady=(8, 0))
+        def slider_section(text, slider):
+            ttk.Label(side, text=text).pack(anchor=tk.W, pady=(10, 2))
+            slider.pack(fill=tk.X)
+
         self.class_slider = DualRangeSlider(
             side, 0, max(len(self._classes) - 1, 1), self._refresh,
             fmt=lambda v: self._classes[min(int(round(v)), len(self._classes) - 1)],
             parse=self._parse_class, snap=round)
-        self.class_slider.pack(fill=tk.X)
+        slider_section("Class", self.class_slider)
 
-        ttk.Label(side, text="Diameter (mm)").pack(anchor=tk.W, pady=(6, 0))
-        self.dia_slider = DualRangeSlider(side, *bounds("diameter_mm"),
-                                          self._refresh, snap=round)
-        self.dia_slider.pack(fill=tk.X)
-
-        ttk.Label(side, text="Total impulse (Ns)").pack(anchor=tk.W, pady=(6, 0))
         self.imp_slider = DualRangeSlider(side, *bounds("total_impulse"),
                                           self._refresh, snap=round)
-        self.imp_slider.pack(fill=tk.X)
+        slider_section("Total impulse (Ns)", self.imp_slider)
 
-        ttk.Label(side, text="Length (mm)").pack(anchor=tk.W, pady=(6, 0))
+        self.avg_slider = DualRangeSlider(side, *bounds("avg_thrust"),
+                                          self._refresh, snap=round)
+        slider_section("Average thrust (N)", self.avg_slider)
+
+        self.dia_slider = DualRangeSlider(side, *bounds("diameter_mm"),
+                                          self._refresh, snap=round)
+        slider_section("Diameter (mm)", self.dia_slider)
+
         self.len_slider = DualRangeSlider(side, *bounds("length_mm"),
                                           self._refresh, snap=round)
-        self.len_slider.pack(fill=tk.X)
+        slider_section("Length (mm)", self.len_slider)
 
+        ttk.Separator(side).pack(fill=tk.X, pady=10)
         ttk.Button(side, text="Reset filters", command=self._reset_filters).pack(
-            fill=tk.X, pady=(10, 0))
+            fill=tk.X)
         self.count_label = ttk.Label(side, text="")
         self.count_label.pack(anchor=tk.W, pady=(8, 0))
 
@@ -1056,8 +1076,8 @@ class MotorBrowser:
     def _reset_filters(self):
         self.search_var.set("")
         self._set_all_manufacturers(True)  # also refreshes
-        for slider in (self.class_slider, self.dia_slider, self.imp_slider,
-                       self.len_slider):
+        for slider in (self.class_slider, self.imp_slider, self.avg_slider,
+                       self.dia_slider, self.len_slider):
             slider.reset()
         self._refresh()
 
@@ -1072,8 +1092,9 @@ class MotorBrowser:
         cidx = self._class_index.get(r["impulse_class"], -1)
         if not (round(clo) <= cidx <= round(chi)):
             return False
-        for slider, key in [(self.dia_slider, "diameter_mm"),
-                            (self.imp_slider, "total_impulse"),
+        for slider, key in [(self.imp_slider, "total_impulse"),
+                            (self.avg_slider, "avg_thrust"),
+                            (self.dia_slider, "diameter_mm"),
                             (self.len_slider, "length_mm")]:
             lo, hi = slider.get()
             if not (lo <= r[key] <= hi):

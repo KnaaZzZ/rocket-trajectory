@@ -129,6 +129,35 @@ def optimize_mass(config, motor_file, opt=None):
     }
 
 
+def is_converged(config, result):
+    """Whether an optimized result is a usable solution.
+
+    Invalid ("did not converge") when the rocket never really flies, or when the
+    objective's constraint can't be met within the mass bounds:
+
+    * apogee <= 0 -- thrust can't lift the airframe (never leaves the pad).
+    * min_mass_for_altitude -- the achieved apogee misses the target by more
+      than 5% (too weak to reach it, or too strong so it overshoots even at the
+      lightest allowed mass).
+    * apogee_capped_mach -- the Mach cap is still exceeded (by >2%) even at the
+      optimized mass.
+    """
+    opt = config["optimizer"]
+    m = result["metrics"]
+    if m["apogee"] <= 0:
+        return False
+    objective = opt["objective"]
+    if objective == "min_mass_for_altitude":
+        target = opt.get("target_altitude")
+        if target and target > 0 and not (0.95 * target <= m["apogee"] <= 1.05 * target):
+            return False
+    elif objective == "apogee_capped_mach":
+        limit = opt.get("mach_limit")
+        if limit and m["max_mach"] > limit * 1.02:
+            return False
+    return True
+
+
 def optimize(config, motor_files=None, progress=None):
     """Optimize airframe mass for each motor; return configs ranked by score.
 
@@ -136,6 +165,9 @@ def optimize(config, motor_files=None, progress=None):
     ``motor_files`` is the list of .eng paths to sweep; if None, the whole
     library is used. ``progress`` is an optional callback(done, total, name)
     invoked after each motor, e.g. to drive a GUI progress bar.
+
+    Each result carries a ``converged`` flag (see is_converged). Converged
+    results are ranked first (by score); non-converged ones follow.
     """
     if motor_files is None:
         motor_files = find_motor_files()
@@ -144,10 +176,13 @@ def optimize(config, motor_files=None, progress=None):
 
     results = []
     for i, mf in enumerate(motor_files, 1):
-        results.append(optimize_mass(config, mf))
+        result = optimize_mass(config, mf)
+        result["converged"] = is_converged(config, result)
+        results.append(result)
         if progress:
             progress(i, len(motor_files), _motor_name(mf))
-    results.sort(key=lambda r: r["score"], reverse=True)
+    # Converged first, then by score (both descending).
+    results.sort(key=lambda r: (r["converged"], r["score"]), reverse=True)
     return results
 
 

@@ -104,6 +104,7 @@ def _serializable_results(results):
             "mass": r["mass"],
             "score": r["score"],
             "metrics": r["metrics"],
+            "converged": r.get("converged", True),
         })
     return slim
 

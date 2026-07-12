@@ -593,10 +593,18 @@ class OptimizerGUI:
 
     def _populate_table(self, results):
         self.tree.delete(*self.tree.get_children())
-        for i, r in enumerate(results, 1):
+        self.tree.tag_configure("invalid", foreground="#c00000")
+        rank = 0
+        for i, r in enumerate(results):
             m = r["metrics"]
-            self.tree.insert("", tk.END, iid=str(i - 1), values=(
-                i, motor_name(r["motor_file"]), f"{r['mass']:.2f}",
+            converged = r.get("converged", True)
+            if converged:
+                rank += 1
+                rank_text, tags = str(rank), ()
+            else:
+                rank_text, tags = "—", ("invalid",)
+            self.tree.insert("", tk.END, iid=str(i), tags=tags, values=(
+                rank_text, motor_name(r["motor_file"]), f"{r['mass']:.2f}",
                 f"{m['apogee']:.1f}", f"{m['apogee_time']:.2f}",
                 f"{m['max_speed']:.1f}", f"{m['max_mach']:.2f}",
                 f"{m['max_acceleration']:.1f}",

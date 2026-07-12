@@ -1,0 +1,6 @@
+# Apogee — Rocket Trajectory Optimizer
+# Install with:  python -m pip install -r requirements.txt
+rocketpy>=1.12
+matplotlib>=3.8
+numpy>=1.24
+sv-ttk>=2.6      # modern Sun Valley ttk theme (app falls back to 'clam' if absent)

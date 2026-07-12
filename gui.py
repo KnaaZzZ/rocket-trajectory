@@ -41,6 +41,11 @@ from simulation import (  # noqa: E402
 
 OUTPUT_DIR = "output"
 
+APP_NAME = "Apogee"
+APP_TAGLINE = "Rocket Trajectory Optimizer"
+AUTHOR = "Yaroslav"
+APP_TITLE = f"{APP_NAME} — {APP_TAGLINE}"
+
 OBJECTIVES = [
     "apogee", "apogee_time", "max_speed", "max_mach", "max_acceleration",
     "apogee_capped_mach", "min_mass_for_altitude",
@@ -89,8 +94,9 @@ TABLE_COLUMNS = [
 class OptimizerGUI:
     def __init__(self, root):
         self.root = root
-        root.title("Point-Mass Trajectory Optimizer")
-        root.geometry("1380x720")
+        root.title(APP_TITLE)
+        root.geometry("1440x820")
+        root.minsize(1200, 700)
 
         self.vars = {}          # config path -> tk StringVar
         self.results = []       # last optimize() results, index-aligned to rows
@@ -104,6 +110,9 @@ class OptimizerGUI:
         self.motor_presets = store.load_motor_presets()
         self.saved_configs = store.load_saved_configs()
         self.settings = store.load_settings()
+        self._build_header()
+        self.body = ttk.Frame(root)
+        self.body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self._build_config_panel()
         self._build_motor_panel()
         self._build_results_panel()
@@ -115,9 +124,25 @@ class OptimizerGUI:
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    # --- header / branding ----------------------------------------------
+    def _build_header(self):
+        header = ttk.Frame(self.root, padding=(18, 12, 18, 8))
+        header.pack(side=tk.TOP, fill=tk.X)
+
+        title = ttk.Frame(header)
+        title.pack(side=tk.LEFT)
+        ttk.Label(title, text=f"\U0001F680  {APP_NAME}",
+                  font=("Segoe UI Semibold", 20)).pack(anchor=tk.W)
+        ttk.Label(title, text=APP_TAGLINE, font=("Segoe UI", 10),
+                  foreground="#6b7280").pack(anchor=tk.W)
+
+        ttk.Label(header, text=f"by {AUTHOR}", font=("Segoe UI Semibold", 11)
+                  ).pack(side=tk.RIGHT, anchor=tk.S, pady=(0, 2))
+        ttk.Separator(self.root).pack(side=tk.TOP, fill=tk.X)
+
     # --- config panel ---------------------------------------------------
     def _build_config_panel(self):
-        left = ttk.Frame(self.root, padding=8)
+        left = ttk.Frame(self.body, padding=(12, 10))
         left.pack(side=tk.LEFT, fill=tk.Y)
 
         for group_name, fields in FIELDS:
@@ -155,10 +180,10 @@ class OptimizerGUI:
 
     # --- motor panel ----------------------------------------------------
     def _build_motor_panel(self):
-        mid = ttk.Frame(self.root, padding=8)
+        mid = ttk.Frame(self.body, padding=(12, 10))
         mid.pack(side=tk.LEFT, fill=tk.Y)
 
-        ttk.Label(mid, text="Motors", font=("", 10, "bold")).pack(anchor=tk.W)
+        ttk.Label(mid, text="Motors", font=("Segoe UI Semibold", 11)).pack(anchor=tk.W)
         ttk.Button(mid, text="Choose motors…  (browse library)",
                    command=self._open_motor_browser).pack(fill=tk.X, pady=(2, 4))
 
@@ -166,8 +191,12 @@ class OptimizerGUI:
         self.chosen_label.pack(anchor=tk.W)
         chosen_box = ttk.Frame(mid)
         chosen_box.pack(fill=tk.BOTH, expand=True)
-        self.chosen_list = tk.Listbox(chosen_box, selectmode=tk.EXTENDED, width=32,
-                                      height=16, exportselection=False)
+        self.chosen_list = tk.Listbox(
+            chosen_box, selectmode=tk.EXTENDED, width=32, height=16,
+            exportselection=False, activestyle="none", relief=tk.FLAT,
+            borderwidth=0, highlightthickness=1, highlightbackground="#d0d0d0",
+            font=("Segoe UI", 10), selectbackground="#0067c0",
+            selectforeground="white")
         csb = ttk.Scrollbar(chosen_box, command=self.chosen_list.yview)
         self.chosen_list.config(yscrollcommand=csb.set)
         self.chosen_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -196,16 +225,17 @@ class OptimizerGUI:
 
     # --- results panel --------------------------------------------------
     def _build_results_panel(self):
-        right = ttk.Frame(self.root, padding=8)
+        right = ttk.Frame(self.body, padding=(12, 10))
         right.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
         top = ttk.Frame(right)
         top.pack(fill=tk.X)
-        self.run_btn = ttk.Button(top, text="Run Optimizer", command=self.on_run)
+        self.run_btn = ttk.Button(top, text="Run Optimizer", command=self.on_run,
+                                  style="Accent.TButton")
         self.run_btn.pack(side=tk.LEFT)
         ttk.Button(top, text="Clear inputs", command=self.on_clear).pack(
             side=tk.LEFT, padx=(6, 0))
-        self.status = ttk.Label(top, text="Ready", foreground="gray")
+        self.status = ttk.Label(top, text="Ready", foreground="#6b7280")
         self.status.pack(side=tk.LEFT, padx=8)
         self.progress = ttk.Progressbar(right, mode="determinate")
         self.progress.pack(fill=tk.X, pady=4)
@@ -1230,8 +1260,32 @@ class MotorBrowser:
         self._add_records(list(self._shown))
 
 
+def apply_theme(root):
+    """Apply the modern Sun Valley theme (if available) plus a few tweaks."""
+    try:
+        import sv_ttk
+        sv_ttk.set_theme("light")
+    except Exception:
+        # Fall back to a cleaner built-in theme.
+        try:
+            ttk.Style().theme_use("clam")
+        except tk.TclError:
+            pass
+    try:
+        import tkinter.font as tkfont
+        default = tkfont.nametofont("TkDefaultFont")
+        default.configure(family="Segoe UI", size=10)
+        root.option_add("*Font", default)
+    except tk.TclError:
+        pass
+    style = ttk.Style()
+    style.configure("Treeview", rowheight=26)               # roomier rows
+    style.configure("Treeview.Heading", font=("Segoe UI Semibold", 9))
+
+
 def main():
     root = tk.Tk()
+    apply_theme(root)
     OptimizerGUI(root)
     root.mainloop()
 

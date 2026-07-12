@@ -21,10 +21,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 import matplotlib
 
 matplotlib.use("Agg")  # figures are embedded via FigureCanvasTkAgg, not shown
-from matplotlib.backends.backend_tkagg import (  # noqa: E402
-    FigureCanvasTkAgg,
-    NavigationToolbar2Tk,
-)
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
 
 import store  # noqa: E402
 from optimizer import optimize  # noqa: E402
@@ -105,6 +102,7 @@ class OptimizerGUI:
 
         self.presets = store.load_presets()
         self.motor_presets = store.load_motor_presets()
+        self.saved_configs = store.load_saved_configs()
         self.settings = store.load_settings()
         self._build_config_panel()
         self._build_motor_panel()
@@ -231,9 +229,25 @@ class OptimizerGUI:
         self.tree.pack(fill=tk.BOTH, expand=True, pady=6)
         self.tree.bind("<Double-1>", lambda e: self.on_show_details())
 
-        self.details_btn = ttk.Button(right, text="Show data & plots for selected",
-                                      command=self.on_show_details, state=tk.DISABLED)
-        self.details_btn.pack(anchor=tk.E)
+        actions = ttk.Frame(right)
+        actions.pack(fill=tk.X, pady=(2, 0))
+        self.details_btn = ttk.Button(
+            actions, text="Show data & plots (or double-click a row)",
+            command=self.on_show_details, state=tk.DISABLED)
+        self.details_btn.pack(side=tk.LEFT)
+        ttk.Button(actions, text="Save configuration",
+                   command=self.on_save_config).pack(side=tk.LEFT, padx=6)
+
+        saved = ttk.Frame(right)
+        saved.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(saved, text="Saved configs:").pack(side=tk.LEFT)
+        self.saved_combo = ttk.Combobox(saved, state="readonly")
+        self.saved_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        ttk.Button(saved, text="Open", command=self.on_open_saved_config).pack(
+            side=tk.LEFT)
+        ttk.Button(saved, text="Del", command=self.on_delete_saved_config).pack(
+            side=tk.LEFT)
+        self._refresh_saved_combo()
 
     # --- motor list logic -----------------------------------------------
     def _load_library(self):
@@ -612,7 +626,7 @@ class OptimizerGUI:
         self._set_busy(False, "Error.")
         messagebox.showerror("Optimization failed", str(exc))
 
-    # --- full details for a selected config -----------------------------
+    # --- full details for a configuration -------------------------------
     def on_show_details(self):
         if self._busy or not self.results:
             return
@@ -621,42 +635,56 @@ class OptimizerGUI:
             messagebox.showinfo("No selection", "Select a configuration first.")
             return
         result = self.results[int(sel[0])]
-        self._set_busy(True, f"Simulating {motor_name(result['motor_file'])}...")
-        threading.Thread(target=self._details_worker, args=(result,),
-                         daemon=True).start()
+        self._start_details(self.cfg, result["motor_file"], result["mass"])
 
-    def _details_worker(self, result):
+    def _start_details(self, config, motor_file, mass):
+        self._set_busy(True, f"Simulating {motor_name(motor_file)}...")
+        threading.Thread(target=self._details_worker,
+                         args=(config, motor_file, mass), daemon=True).start()
+
+    def _details_worker(self, config, motor_file, mass):
         try:
-            env, flight = run(self.cfg, motor_file=result["motor_file"],
-                              mass=result["mass"])
+            env, flight = run(config, motor_file=motor_file, mass=mass)
             figures = generate_flight_figures(flight)
             summary = metrics(env, flight)
             os.makedirs(OUTPUT_DIR, exist_ok=True)
             export = os.path.join(
-                OUTPUT_DIR,
-                f"{motor_name(result['motor_file'])}_{result['mass']:.2f}kg.csv")
+                OUTPUT_DIR, f"{motor_name(motor_file)}_{mass:.2f}kg.csv")
             flight.export_data(export)
         except Exception as exc:
             self.root.after(0, self._run_failed, exc)
             return
-        self.root.after(0, self._details_done, result, figures, summary, export)
+        self.root.after(0, self._details_done, motor_file, mass, figures,
+                        summary, export)
 
-    def _details_done(self, result, figures, summary, export):
+    def _details_done(self, motor_file, mass, figures, summary, export):
         self._set_busy(False, "Ready")
-        self._open_details_window(result, figures, summary, export)
+        self._open_details_window(motor_file, mass, figures, summary, export)
 
-    def _open_details_window(self, result, figures, summary, export):
+    def _open_details_window(self, motor_file, mass, figures, summary, export):
         win = tk.Toplevel(self.root)
-        win.title(f"{motor_name(result['motor_file'])} @ {result['mass']:.2f} kg")
-        win.geometry("980x720")
-        nb = ttk.Notebook(win)
-        nb.pack(fill=tk.BOTH, expand=True)
+        win.title(f"{motor_name(motor_file)} @ {mass:.2f} kg")
+        win.geometry("1000x760")
 
-        summary_tab = ttk.Frame(nb, padding=12)
-        nb.add(summary_tab, text="Summary")
+        # One scrollable page holding the summary and every plot stacked.
+        canvas = tk.Canvas(win, highlightthickness=0)
+        vsb = ttk.Scrollbar(win, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        content = ttk.Frame(canvas)
+        win_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>",
+                     lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+
+        def on_wheel(e):
+            canvas.yview_scroll(int(-e.delta / 120), "units")
+        canvas.bind("<MouseWheel>", on_wheel)
+
         lines = [
-            f"Motor:            {motor_name(result['motor_file'])}",
-            f"Airframe mass:    {result['mass']:.3f} kg",
+            f"Motor:            {motor_name(motor_file)}",
+            f"Airframe mass:    {mass:.3f} kg",
             "",
             f"Apogee (AGL):     {summary['apogee']:.1f} m",
             f"Apogee time:      {summary['apogee_time']:.2f} s",
@@ -666,16 +694,70 @@ class OptimizerGUI:
             "",
             f"Time series exported to: {export}",
         ]
-        tk.Label(summary_tab, text="\n".join(lines), justify=tk.LEFT,
-                 font=("Courier New", 11), anchor="nw").pack(anchor=tk.NW)
+        tk.Label(content, text="\n".join(lines), justify=tk.LEFT,
+                 font=("Courier New", 11), anchor="nw").pack(anchor=tk.NW, padx=12,
+                                                             pady=8)
 
         for name, fig in figures:
-            tab = ttk.Frame(nb)
-            nb.add(tab, text=name)
-            canvas = FigureCanvasTkAgg(fig, master=tab)
-            canvas.draw()
-            NavigationToolbar2Tk(canvas, tab).update()
-            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            ttk.Label(content, text=name, font=("", 10, "bold")).pack(
+                anchor=tk.W, padx=12, pady=(10, 0))
+            fig_canvas = FigureCanvasTkAgg(fig, master=content)
+            fig_canvas.draw()
+            widget = fig_canvas.get_tk_widget()
+            widget.pack(fill=tk.X, padx=12, pady=(0, 6))
+            widget.bind("<MouseWheel>", on_wheel)  # keep wheel scrolling over plots
+
+    # --- saved configurations -------------------------------------------
+    def on_save_config(self):
+        if not self.results:
+            return
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("No selection", "Select a configuration to save.")
+            return
+        result = self.results[int(sel[0])]
+        name = simpledialog.askstring(
+            "Save configuration", "Name for this configuration:", parent=self.root)
+        if not name or not name.strip():
+            return
+        self.saved_configs[name.strip()] = {
+            "motor_name": motor_name(result["motor_file"]),
+            "motor_file": result["motor_file"],
+            "mass": result["mass"],
+            "metrics": result["metrics"],
+            "config": self.cfg,
+        }
+        store.save_saved_configs(self.saved_configs)
+        self._refresh_saved_combo()
+        self.saved_combo.set(name.strip())
+
+    def _refresh_saved_combo(self):
+        names = sorted(self.saved_configs)
+        self.saved_combo["values"] = names
+        if self.saved_combo.get() not in names:
+            self.saved_combo.set("")
+
+    def on_open_saved_config(self):
+        if self._busy:
+            return
+        rec = self.saved_configs.get(self.saved_combo.get())
+        if not rec:
+            messagebox.showinfo("No configuration", "Pick a saved configuration.")
+            return
+        cfg = rec["config"]
+        try:
+            cfg["optimizer"]["mass_bounds"] = tuple(cfg["optimizer"]["mass_bounds"])
+        except (KeyError, TypeError):
+            pass
+        self._start_details(cfg, rec["motor_file"], rec["mass"])
+
+    def on_delete_saved_config(self):
+        name = self.saved_combo.get()
+        if name in self.saved_configs and messagebox.askyesno(
+                "Delete configuration", f"Delete saved configuration '{name}'?"):
+            del self.saved_configs[name]
+            store.save_saved_configs(self.saved_configs)
+            self._refresh_saved_combo()
 
     # --- helpers --------------------------------------------------------
     def _set_busy(self, busy, message):

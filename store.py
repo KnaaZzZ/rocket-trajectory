@@ -12,6 +12,7 @@ import time
 SETTINGS_FILE = "gui_state.json"
 PRESETS_FILE = "presets.json"
 MOTOR_PRESETS_FILE = "motor_presets.json"
+CONFIGS_FILE = "saved_configs.json"
 RESULTS_DIR = "data/results"
 
 
@@ -70,6 +71,25 @@ def save_motor_presets(presets):
     try:
         with open(MOTOR_PRESETS_FILE, "w", encoding="utf-8") as f:
             json.dump(presets, f, indent=2)
+    except OSError:
+        pass
+
+
+def load_saved_configs():
+    """Return {name: {motor_file, mass, metrics, config}}, or {} if none."""
+    try:
+        with open(CONFIGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_saved_configs(configs):
+    """Persist the saved-configurations dict (best effort)."""
+    try:
+        with open(CONFIGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(configs, f, indent=2)
     except OSError:
         pass
 

@@ -13,6 +13,7 @@ output/
 gui_state.json
 presets.json
 motor_presets.json
+saved_configs.json
 data/results/
 
 # Editor / IDE

@@ -143,13 +143,22 @@ class OptimizerGUI:
                 widget.pack(side=tk.RIGHT)
             self._build_preset_menu(box, group_key)  # compact, below the inputs
 
-    def _build_preset_menu(self, box, group_key):
-        """A small 'Presets' menu (load/save/delete) tucked under the inputs."""
-        mb = ttk.Menubutton(box, text="Presets ▾")
-        mb.pack(anchor=tk.E, pady=(2, 0))
+    @staticmethod
+    def _link_menu(parent, text, postcommand):
+        """A small blue text link that drops a menu (compact preset control)."""
+        mb = tk.Menubutton(parent, text=text, relief=tk.FLAT, borderwidth=0,
+                           fg="#3b6ea5", activeforeground="#1f4e79",
+                           cursor="hand2", font=("", 8), padx=0, pady=0)
         menu = tk.Menu(mb, tearoff=0)
         mb["menu"] = menu
-        menu.configure(postcommand=lambda: self._populate_preset_menu(group_key))
+        menu.configure(postcommand=postcommand)
+        return mb, menu
+
+    def _build_preset_menu(self, box, group_key):
+        """A small 'Presets' link that drops a load/save/delete menu."""
+        mb, menu = self._link_menu(
+            box, "Presets ▾", lambda: self._populate_preset_menu(group_key))
+        mb.pack(anchor=tk.E, pady=(2, 0))
         self.preset_menus[group_key] = menu
 
     # --- motor panel ----------------------------------------------------
@@ -182,16 +191,10 @@ class OptimizerGUI:
 
         preset = ttk.Frame(mid)
         preset.pack(fill=tk.X, pady=(4, 0))
-        ttk.Label(preset, text="Motor preset:").pack(side=tk.LEFT)
-        self.motor_preset_combo = ttk.Combobox(preset, state="readonly", width=10)
-        self.motor_preset_combo.pack(side=tk.LEFT, padx=2)
-        ttk.Button(preset, text="Save", width=5,
-                   command=self._save_motor_preset).pack(side=tk.LEFT)
-        ttk.Button(preset, text="Load", width=5,
-                   command=self._load_motor_preset).pack(side=tk.LEFT)
-        ttk.Button(preset, text="Del", width=4,
-                   command=self._delete_motor_preset).pack(side=tk.LEFT)
-        self._refresh_motor_preset_combo()
+        mb, menu = self._link_menu(preset, "Motor presets ▾",
+                                   self._populate_motor_preset_menu)
+        mb.pack(anchor=tk.E)
+        self.motor_preset_menu = menu
 
     # --- results panel --------------------------------------------------
     def _build_results_panel(self):
@@ -309,11 +312,23 @@ class OptimizerGUI:
             text=f"Chosen (optimizer runs these): {len(self.chosen)}")
 
     # --- motor presets (named sets of chosen motors) --------------------
-    def _refresh_motor_preset_combo(self):
+    def _populate_motor_preset_menu(self):
+        menu = self.motor_preset_menu
+        menu.delete(0, tk.END)
         names = sorted(self.motor_presets)
-        self.motor_preset_combo["values"] = names
-        if self.motor_preset_combo.get() not in names:
-            self.motor_preset_combo.set("")
+        for name in names:
+            menu.add_command(label=f"Load  {name}",
+                             command=lambda n=name: self._load_motor_preset(n))
+        if names:
+            menu.add_separator()
+        menu.add_command(label="Save current motors as new preset…",
+                         command=self._save_motor_preset)
+        if names:
+            submenu = tk.Menu(menu, tearoff=0)
+            for name in names:
+                submenu.add_command(
+                    label=name, command=lambda n=name: self._delete_motor_preset(n))
+            menu.add_cascade(label="Delete", menu=submenu)
 
     def _save_motor_preset(self):
         if not self.chosen:
@@ -325,14 +340,10 @@ class OptimizerGUI:
             return
         self.motor_presets[name.strip()] = sorted(self.chosen)
         store.save_motor_presets(self.motor_presets)
-        self._refresh_motor_preset_combo()
-        self.motor_preset_combo.set(name.strip())
 
-    def _load_motor_preset(self):
-        name = self.motor_preset_combo.get()
+    def _load_motor_preset(self, name):
         names = self.motor_presets.get(name)
         if not names:
-            messagebox.showinfo("No preset", "Pick a saved motor preset to load.")
             return
         self.chosen = {}
         missing = [n for n in names if n not in self.all_motors]
@@ -342,13 +353,11 @@ class OptimizerGUI:
                                    f"{len(missing)} motor(s) in this preset are no "
                                    "longer in the library and were skipped.")
 
-    def _delete_motor_preset(self):
-        name = self.motor_preset_combo.get()
+    def _delete_motor_preset(self, name):
         if name in self.motor_presets and messagebox.askyesno(
                 "Delete motor preset", f"Delete motor preset '{name}'?"):
             del self.motor_presets[name]
             store.save_motor_presets(self.motor_presets)
-            self._refresh_motor_preset_combo()
 
     # --- config <-> form ------------------------------------------------
     @staticmethod
@@ -406,7 +415,7 @@ class OptimizerGUI:
                              command=lambda n=name: self._load_preset(group_key, n))
         if names:
             menu.add_separator()
-        menu.add_command(label="Save current as…",
+        menu.add_command(label="Save current as new preset…",
                          command=lambda: self._save_preset(group_key))
         if names:
             submenu = tk.Menu(menu, tearoff=0)

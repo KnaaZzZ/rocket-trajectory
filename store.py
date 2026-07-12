@@ -11,6 +11,7 @@ import time
 
 SETTINGS_FILE = "gui_state.json"
 PRESETS_FILE = "presets.json"
+MOTOR_PRESETS_FILE = "motor_presets.json"
 RESULTS_DIR = "data/results"
 
 
@@ -49,6 +50,25 @@ def save_presets(presets):
     """Persist the presets dict (best effort)."""
     try:
         with open(PRESETS_FILE, "w", encoding="utf-8") as f:
+            json.dump(presets, f, indent=2)
+    except OSError:
+        pass
+
+
+def load_motor_presets():
+    """Return {preset_name: [motor_name, ...]}, or {} if none."""
+    try:
+        with open(MOTOR_PRESETS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_motor_presets(presets):
+    """Persist the motor-presets dict (best effort)."""
+    try:
+        with open(MOTOR_PRESETS_FILE, "w", encoding="utf-8") as f:
             json.dump(presets, f, indent=2)
     except OSError:
         pass

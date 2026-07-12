@@ -34,6 +34,7 @@ from simulation import (  # noqa: E402
     find_motor_files,
     generate_flight_figures,
     metrics,
+    motor_catalog,
     motor_name,
     run,
     save_motor_files,
@@ -105,6 +106,7 @@ class OptimizerGUI:
         self._busy = False
 
         self.presets = store.load_presets()
+        self.motor_presets = store.load_motor_presets()
         self.settings = store.load_settings()
         self._build_config_panel()
         self._build_motor_panel()
@@ -160,52 +162,48 @@ class OptimizerGUI:
         mid = ttk.Frame(self.root, padding=8)
         mid.pack(side=tk.LEFT, fill=tk.Y)
 
-        ttk.Label(mid, text="Motor library", font=("", 10, "bold")).pack(anchor=tk.W)
-        filt = ttk.Frame(mid)
-        filt.pack(fill=tk.X, pady=2)
-        ttk.Label(filt, text="Filter:").pack(side=tk.LEFT)
-        self.filter_var = tk.StringVar()
-        self.filter_var.trace_add("write", lambda *a: self._refresh_available())
-        ttk.Entry(filt, textvariable=self.filter_var).pack(
-            side=tk.LEFT, fill=tk.X, expand=True)
-
-        avail_box = ttk.Frame(mid)
-        avail_box.pack(fill=tk.BOTH, expand=True)
-        self.available_list = tk.Listbox(avail_box, selectmode=tk.EXTENDED, width=30,
-                                         height=12, exportselection=False)
-        asb = ttk.Scrollbar(avail_box, command=self.available_list.yview)
-        self.available_list.config(yscrollcommand=asb.set)
-        self.available_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        asb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.available_list.bind("<Double-1>", lambda e: self._add_selected())
-
-        btns = ttk.Frame(mid)
-        btns.pack(fill=tk.X, pady=3)
-        ttk.Button(btns, text="Add →", command=self._add_selected).pack(
-            side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(btns, text="Add all shown", command=self._add_all_shown).pack(
-            side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(btns, text="← Remove", command=self._remove_selected).pack(
-            side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Label(mid, text="Motors", font=("", 10, "bold")).pack(anchor=tk.W)
+        ttk.Button(mid, text="Choose motors…  (browse library)",
+                   command=self._open_motor_browser).pack(fill=tk.X, pady=(2, 4))
 
         self.chosen_label = ttk.Label(mid, text="Chosen (optimizer runs these): 0")
         self.chosen_label.pack(anchor=tk.W)
         chosen_box = ttk.Frame(mid)
         chosen_box.pack(fill=tk.BOTH, expand=True)
-        self.chosen_list = tk.Listbox(chosen_box, selectmode=tk.EXTENDED, width=30,
-                                      height=9, exportselection=False)
+        self.chosen_list = tk.Listbox(chosen_box, selectmode=tk.EXTENDED, width=32,
+                                      height=16, exportselection=False)
         csb = ttk.Scrollbar(chosen_box, command=self.chosen_list.yview)
         self.chosen_list.config(yscrollcommand=csb.set)
         self.chosen_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         csb.pack(side=tk.RIGHT, fill=tk.Y)
         self.chosen_list.bind("<Double-1>", lambda e: self._remove_selected())
 
+        btns = ttk.Frame(mid)
+        btns.pack(fill=tk.X, pady=3)
+        ttk.Button(btns, text="Remove selected", command=self._remove_selected).pack(
+            side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(btns, text="Clear all", command=self._clear_chosen).pack(
+            side=tk.LEFT, expand=True, fill=tk.X)
+
         actions = ttk.Frame(mid)
-        actions.pack(fill=tk.X, pady=(3, 0))
+        actions.pack(fill=tk.X)
         ttk.Button(actions, text="Add new motor…",
                    command=self._add_new_motor).pack(side=tk.LEFT, expand=True, fill=tk.X)
-        ttk.Button(actions, text="Save chosen to saved/",
+        ttk.Button(actions, text="Save to saved/",
                    command=self._save_chosen).pack(side=tk.LEFT, expand=True, fill=tk.X)
+
+        preset = ttk.Frame(mid)
+        preset.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(preset, text="Motor preset:").pack(side=tk.LEFT)
+        self.motor_preset_combo = ttk.Combobox(preset, state="readonly", width=10)
+        self.motor_preset_combo.pack(side=tk.LEFT, padx=2)
+        ttk.Button(preset, text="Save", width=5,
+                   command=self._save_motor_preset).pack(side=tk.LEFT)
+        ttk.Button(preset, text="Load", width=5,
+                   command=self._load_motor_preset).pack(side=tk.LEFT)
+        ttk.Button(preset, text="Del", width=4,
+                   command=self._delete_motor_preset).pack(side=tk.LEFT)
+        self._refresh_motor_preset_combo()
 
     # --- results panel --------------------------------------------------
     def _build_results_panel(self):
@@ -252,34 +250,35 @@ class OptimizerGUI:
         for directory in (LIBRARY_DIR, SAVED_DIR):
             for path in find_motor_files(directory):
                 self.all_motors.setdefault(motor_name(path), path)
-        self._refresh_available()
 
-    def _refresh_available(self):
-        needle = self.filter_var.get().strip().lower()
-        self._available_names = sorted(
-            n for n in self.all_motors if needle in n.lower()
-        )
-        self.available_list.delete(0, tk.END)
-        for name in self._available_names:
-            self.available_list.insert(tk.END, name)
+    def _open_motor_browser(self):
+        MotorBrowser(self.root, self._add_records)
+
+    def _add_records(self, records):
+        """Add motor metadata records (from the browser) to the chosen set."""
+        for r in records:
+            name = r["name"]
+            self.all_motors.setdefault(name, r["path"])
+            self.chosen[name] = r["path"]
+        self._refresh_chosen()
 
     def _add_names(self, names):
         for name in names:
-            self.chosen.setdefault(name, self.all_motors[name])
+            if name in self.all_motors:
+                self.chosen[name] = self.all_motors[name]
         self._refresh_chosen()
-
-    def _add_selected(self):
-        self._add_names(self._available_names[i]
-                        for i in self.available_list.curselection())
-
-    def _add_all_shown(self):
-        self._add_names(list(self._available_names))
 
     def _remove_selected(self):
         names = [self._chosen_names[i] for i in self.chosen_list.curselection()]
         for name in names:
             self.chosen.pop(name, None)
         self._refresh_chosen()
+
+    def _clear_chosen(self):
+        if self.chosen and messagebox.askyesno(
+                "Clear all", "Remove all motors from the chosen list?"):
+            self.chosen = {}
+            self._refresh_chosen()
 
     def _refresh_chosen(self):
         self._chosen_names = sorted(self.chosen)
@@ -304,8 +303,49 @@ class OptimizerGUI:
         """Called by the dialog once a new motor is validated and on disk."""
         self.all_motors[name] = path
         self.chosen[name] = path
-        self._refresh_available()
         self._refresh_chosen()
+
+    # --- motor presets (named sets of chosen motors) --------------------
+    def _refresh_motor_preset_combo(self):
+        names = sorted(self.motor_presets)
+        self.motor_preset_combo["values"] = names
+        if self.motor_preset_combo.get() not in names:
+            self.motor_preset_combo.set("")
+
+    def _save_motor_preset(self):
+        if not self.chosen:
+            messagebox.showinfo("No motors", "Choose motors before saving a preset.")
+            return
+        name = simpledialog.askstring("Save motor preset",
+                                      "Name for this motor set:", parent=self.root)
+        if not name or not name.strip():
+            return
+        self.motor_presets[name.strip()] = sorted(self.chosen)
+        store.save_motor_presets(self.motor_presets)
+        self._refresh_motor_preset_combo()
+        self.motor_preset_combo.set(name.strip())
+
+    def _load_motor_preset(self):
+        name = self.motor_preset_combo.get()
+        names = self.motor_presets.get(name)
+        if not names:
+            messagebox.showinfo("No preset", "Pick a saved motor preset to load.")
+            return
+        self.chosen = {}
+        missing = [n for n in names if n not in self.all_motors]
+        self._add_names(names)
+        if missing:
+            messagebox.showwarning("Some motors missing",
+                                   f"{len(missing)} motor(s) in this preset are no "
+                                   "longer in the library and were skipped.")
+
+    def _delete_motor_preset(self):
+        name = self.motor_preset_combo.get()
+        if name in self.motor_presets and messagebox.askyesno(
+                "Delete motor preset", f"Delete motor preset '{name}'?"):
+            del self.motor_presets[name]
+            store.save_motor_presets(self.motor_presets)
+            self._refresh_motor_preset_combo()
 
     # --- config <-> form ------------------------------------------------
     @staticmethod
@@ -735,6 +775,221 @@ class AddMotorDialog:
             return
         self.win.destroy()
         self.on_success(motor_name(path), path)
+
+
+class MotorBrowser:
+    """OpenRocket-style motor browser: search, side filters, sortable columns.
+
+    Reads the local motor library (data/library + data/saved) via
+    simulation.motor_catalog and lets the user add motors to the chosen set.
+    """
+
+    # (key, heading, width, kind). kind drives sorting/formatting.
+    COLUMNS = [
+        ("manufacturer", "Manufacturer", 95, "text"),
+        ("designation", "Motor", 135, "text"),
+        ("impulse_class", "Class", 46, "class"),
+        ("total_impulse", "Impulse (Ns)", 90, "num0"),
+        ("avg_thrust", "Avg (N)", 70, "num0"),
+        ("diameter_mm", "Dia (mm)", 70, "num0"),
+        ("length_mm", "Len (mm)", 70, "num0"),
+        ("burn_time", "Burn (s)", 60, "num2"),
+    ]
+    _NUMERIC = {"total_impulse", "avg_thrust", "diameter_mm", "length_mm", "burn_time"}
+
+    def __init__(self, parent, on_add):
+        self.on_add = on_add
+        self.catalog = motor_catalog()
+        self.sort_col = "manufacturer"
+        self.sort_reverse = False
+        self._shown = []
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("Choose motors")
+        self.win.geometry("960x620")
+        self.win.transient(parent)
+        self.win.grab_set()
+
+        self._build_filters()
+        self._build_table()
+        self._build_footer()
+        self._refresh()
+
+    # --- widgets --------------------------------------------------------
+    def _build_filters(self):
+        side = ttk.Frame(self.win, padding=8)
+        side.pack(side=tk.LEFT, fill=tk.Y)
+        ttk.Label(side, text="Filters", font=("", 10, "bold")).pack(anchor=tk.W)
+
+        self.search_var = tk.StringVar()
+        self.manuf_var = tk.StringVar(value="All")
+        self.class_var = tk.StringVar(value="All")
+        self.dia_var = tk.StringVar(value="All")
+        self.imin_var = tk.StringVar()
+        self.imax_var = tk.StringVar()
+        self.lmin_var = tk.StringVar()
+        self.lmax_var = tk.StringVar()
+
+        def labeled(text):
+            ttk.Label(side, text=text).pack(anchor=tk.W, pady=(6, 0))
+
+        labeled("Search")
+        e = ttk.Entry(side, textvariable=self.search_var, width=22)
+        e.pack(fill=tk.X)
+        self.search_var.trace_add("write", lambda *a: self._refresh())
+
+        manufacturers = ["All"] + sorted({r["manufacturer"] for r in self.catalog})
+        classes = ["All"] + sorted({r["impulse_class"] for r in self.catalog},
+                                   key=self._class_order)
+        diameters = ["All"] + [f"{d:.0f}" for d in
+                               sorted({r["diameter_mm"] for r in self.catalog})]
+        for text, var, values in [
+            ("Manufacturer", self.manuf_var, manufacturers),
+            ("Class", self.class_var, classes),
+            ("Diameter (mm)", self.dia_var, diameters),
+        ]:
+            labeled(text)
+            combo = ttk.Combobox(side, textvariable=var, values=values,
+                                 state="readonly", width=20)
+            combo.pack(fill=tk.X)
+            combo.bind("<<ComboboxSelected>>", lambda e: self._refresh())
+
+        labeled("Impulse (Ns): min / max")
+        rng = ttk.Frame(side)
+        rng.pack(fill=tk.X)
+        ttk.Entry(rng, textvariable=self.imin_var, width=9).pack(side=tk.LEFT)
+        ttk.Entry(rng, textvariable=self.imax_var, width=9).pack(side=tk.LEFT, padx=2)
+        labeled("Length (mm): min / max")
+        rng2 = ttk.Frame(side)
+        rng2.pack(fill=tk.X)
+        ttk.Entry(rng2, textvariable=self.lmin_var, width=9).pack(side=tk.LEFT)
+        ttk.Entry(rng2, textvariable=self.lmax_var, width=9).pack(side=tk.LEFT, padx=2)
+        for var in (self.imin_var, self.imax_var, self.lmin_var, self.lmax_var):
+            var.trace_add("write", lambda *a: self._refresh())
+
+        ttk.Button(side, text="Reset filters", command=self._reset_filters).pack(
+            fill=tk.X, pady=(10, 0))
+        self.count_label = ttk.Label(side, text="")
+        self.count_label.pack(anchor=tk.W, pady=(8, 0))
+
+    def _build_table(self):
+        frame = ttk.Frame(self.win, padding=(0, 8))
+        frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        cols = [c[0] for c in self.COLUMNS]
+        self.tree = ttk.Treeview(frame, columns=cols, show="headings",
+                                 selectmode=tk.EXTENDED)
+        for key, heading, width, kind in self.COLUMNS:
+            self.tree.heading(key, text=heading,
+                              command=lambda k=key: self._sort_by(k))
+            self.tree.column(key, width=width,
+                             anchor=tk.W if kind == "text" else tk.E)
+        vsb = ttk.Scrollbar(frame, command=self.tree.yview)
+        self.tree.config(yscrollcommand=vsb.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.bind("<Double-1>", lambda e: self._add_selected())
+
+    def _build_footer(self):
+        bar = ttk.Frame(self.win, padding=8)
+        bar.pack(side=tk.BOTTOM, fill=tk.X)
+        self.status = ttk.Label(bar, text="")
+        self.status.pack(side=tk.LEFT)
+        ttk.Button(bar, text="Close", command=self.win.destroy).pack(side=tk.RIGHT)
+        ttk.Button(bar, text="Add all shown", command=self._add_all_shown).pack(
+            side=tk.RIGHT, padx=4)
+        ttk.Button(bar, text="Add selected", command=self._add_selected).pack(
+            side=tk.RIGHT)
+
+    # --- behavior -------------------------------------------------------
+    @staticmethod
+    def _class_order(cls):
+        return -1 if cls == "<A" else (ord(cls[0]) if cls and cls[0].isalpha() else 99)
+
+    @staticmethod
+    def _to_float(text):
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            return None
+
+    def _reset_filters(self):
+        self.search_var.set("")
+        self.manuf_var.set("All")
+        self.class_var.set("All")
+        self.dia_var.set("All")
+        for var in (self.imin_var, self.imax_var, self.lmin_var, self.lmax_var):
+            var.set("")
+
+    def _passes(self, r):
+        text = self.search_var.get().strip().lower()
+        if text and text not in f"{r['manufacturer']} {r['designation']} {r['name']}".lower():
+            return False
+        if self.manuf_var.get() != "All" and r["manufacturer"] != self.manuf_var.get():
+            return False
+        if self.class_var.get() != "All" and r["impulse_class"] != self.class_var.get():
+            return False
+        if self.dia_var.get() != "All" and f"{r['diameter_mm']:.0f}" != self.dia_var.get():
+            return False
+        imin, imax = self._to_float(self.imin_var.get()), self._to_float(self.imax_var.get())
+        if imin is not None and r["total_impulse"] < imin:
+            return False
+        if imax is not None and r["total_impulse"] > imax:
+            return False
+        lmin, lmax = self._to_float(self.lmin_var.get()), self._to_float(self.lmax_var.get())
+        if lmin is not None and r["length_mm"] < lmin:
+            return False
+        if lmax is not None and r["length_mm"] > lmax:
+            return False
+        return True
+
+    def _sort_by(self, col):
+        if col == self.sort_col:
+            self.sort_reverse = not self.sort_reverse
+        else:
+            self.sort_col = col
+            self.sort_reverse = False
+        self._refresh()
+
+    def _sort_key(self, r):
+        col = self.sort_col
+        if col == "impulse_class":
+            return r["total_impulse"]  # order classes by actual impulse
+        if col in self._NUMERIC:
+            return r[col]
+        return str(r[col]).lower()
+
+    def _format(self, r):
+        out = []
+        for key, _, _, kind in self.COLUMNS:
+            v = r[key]
+            if kind == "num0":
+                out.append(f"{v:.0f}")
+            elif kind == "num2":
+                out.append(f"{v:.2f}")
+            else:
+                out.append(v)
+        return out
+
+    def _refresh(self):
+        self._shown = sorted((r for r in self.catalog if self._passes(r)),
+                             key=self._sort_key, reverse=self.sort_reverse)
+        self.tree.delete(*self.tree.get_children())
+        for i, r in enumerate(self._shown):
+            self.tree.insert("", tk.END, iid=str(i), values=self._format(r))
+        self.count_label.config(text=f"{len(self._shown)} of {len(self.catalog)} motors")
+
+    def _add_records(self, records):
+        if not records:
+            messagebox.showinfo("No selection", "Select motors first.", parent=self.win)
+            return
+        self.on_add(records)
+        self.status.config(text=f"Added {len(records)} motor(s).")
+
+    def _add_selected(self):
+        self._add_records([self._shown[int(i)] for i in self.tree.selection()])
+
+    def _add_all_shown(self):
+        self._add_records(list(self._shown))
 
 
 def main():

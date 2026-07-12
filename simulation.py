@@ -59,6 +59,117 @@ def load_point_mass_motor(eng_path):
     return PointMassMotor(thrust_source=eng_path, **masses)
 
 
+# Map .eng manufacturer codes to display names (extend as needed).
+_MANUFACTURER_CODES = {
+    "CTI": "Cesaroni", "AT": "AeroTech", "AeroTech": "AeroTech",
+    "Estes": "Estes", "RRK": "Klima", "Apogee": "Apogee",
+    "PP": "PublicMissiles", "RV": "RATT", "Loki": "Loki",
+}
+
+
+def parse_eng(eng_path):
+    """Parse an .eng file into (header_dict, thrust_points).
+
+    header_dict has: designation, diameter_mm, length_mm, delays, prop_mass,
+    total_mass, manufacturer_code. thrust_points is a list of (time_s, thrust_N).
+    """
+    header = None
+    points = []
+    with open(eng_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith(";"):
+                continue
+            if header is None:
+                fields = line.split()
+                header = {
+                    "designation": fields[0],
+                    "diameter_mm": float(fields[1]),
+                    "length_mm": float(fields[2]),
+                    "delays": fields[3],
+                    "prop_mass": float(fields[4]),
+                    "total_mass": float(fields[5]),
+                    "manufacturer_code": fields[6] if len(fields) > 6 else "",
+                }
+            else:
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        points.append((float(parts[0]), float(parts[1])))
+                    except ValueError:
+                        continue
+    if header is None:
+        raise ValueError(f"No motor header line found in {eng_path!r}")
+    return header, points
+
+
+def impulse_class(total_impulse):
+    """Return the letter motor class for a total impulse in N-s."""
+    if total_impulse <= 0:
+        return "?"
+    if total_impulse < 1.25:
+        return "<A"
+    idx = int(math.floor(math.log2(total_impulse / 1.25)))  # A range = [1.25, 2.5)
+    return chr(ord("A") + idx) if 0 <= idx < 26 else "?"
+
+
+def _impulse_and_burn(points):
+    """Total impulse (N-s, trapezoidal) and burn time (s) from thrust points."""
+    total = 0.0
+    for (t0, f0), (t1, f1) in zip(points, points[1:]):
+        total += 0.5 * (f0 + f1) * (t1 - t0)
+    burn = points[-1][0] if points else 0.0
+    return total, burn
+
+
+def motor_metadata(eng_path):
+    """Parse one .eng file into a metadata record for the motor browser."""
+    header, points = parse_eng(eng_path)
+    total_impulse, burn = _impulse_and_burn(points)
+    name = motor_name(eng_path)
+    if "_" in name:  # downloaded files are "<Manufacturer>_<designation>"
+        manufacturer, designation = name.split("_", 1)
+    else:
+        code = header["manufacturer_code"]
+        manufacturer = _MANUFACTURER_CODES.get(code.upper(), code or "Unknown")
+        designation = header["designation"]
+    return {
+        "path": eng_path,
+        "name": name,
+        "manufacturer": manufacturer,
+        "designation": designation,
+        "impulse_class": impulse_class(total_impulse),
+        "diameter_mm": header["diameter_mm"],
+        "length_mm": header["length_mm"],
+        "total_impulse": total_impulse,
+        "avg_thrust": total_impulse / burn if burn > 0 else 0.0,
+        "burn_time": burn,
+        "prop_mass": header["prop_mass"],
+        "total_mass": header["total_mass"],
+    }
+
+
+def motor_catalog(directories=(LIBRARY_DIR, SAVED_DIR)):
+    """Return metadata records for every motor in the given directories.
+
+    Motors are de-duplicated by name (a motor saved into SAVED_DIR shadows the
+    library copy). Files that fail to parse are skipped.
+    """
+    records = []
+    seen = set()
+    for directory in directories:
+        for path in find_motor_files(directory):
+            name = motor_name(path)
+            if name in seen:
+                continue
+            seen.add(name)
+            try:
+                records.append(motor_metadata(path))
+            except (ValueError, IndexError, OSError):
+                continue
+    return records
+
+
 def motor_name(eng_path):
     """Human-readable motor name from an .eng path (no dir, no extension)."""
     return os.path.splitext(os.path.basename(eng_path))[0]

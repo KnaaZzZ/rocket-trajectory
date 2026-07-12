@@ -12,6 +12,7 @@ output/
 # GUI state, presets, and saved run history
 gui_state.json
 presets.json
+motor_presets.json
 data/results/
 
 # Editor / IDE

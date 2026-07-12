@@ -96,6 +96,7 @@ class OptimizerGUI:
         root.geometry("1360x800")
 
         self.vars = {}          # config path -> tk StringVar
+        self.field_widgets = {}  # config path -> (label, entry/combo) widgets
         self.results = []       # last optimize() results, index-aligned to rows
         self.all_motors = {}    # motor name -> .eng path (library + saved + added)
         self.chosen = {}        # motor name -> .eng path (optimizer runs these)
@@ -132,7 +133,8 @@ class OptimizerGUI:
             for path, label, kind in fields:
                 row = ttk.Frame(box)
                 row.pack(fill=tk.X, pady=1)
-                ttk.Label(row, text=label, width=25).pack(side=tk.LEFT)
+                label_widget = ttk.Label(row, text=label, width=25)
+                label_widget.pack(side=tk.LEFT)
                 var = tk.StringVar()
                 self.vars[path] = var
                 if kind == "combo":
@@ -141,7 +143,27 @@ class OptimizerGUI:
                 else:
                     widget = ttk.Entry(row, textvariable=var, width=17)
                 widget.pack(side=tk.RIGHT)
+                self.field_widgets[path] = (label_widget, widget)
             self._build_preset_menu(box, group_key)  # compact, below the inputs
+
+        # Grey out objective-specific fields when their objective isn't chosen.
+        self.vars[("optimizer", "objective")].trace_add(
+            "write", lambda *a: self._update_conditional_fields())
+        self._update_conditional_fields()
+
+    # Fields that only apply to a specific objective.
+    _CONDITIONAL_FIELDS = {
+        ("optimizer", "mach_limit"): "apogee_capped_mach",
+        ("optimizer", "target_altitude"): "min_mass_for_altitude",
+    }
+
+    def _update_conditional_fields(self):
+        objective = self.vars[("optimizer", "objective")].get()
+        for path, needed_by in self._CONDITIONAL_FIELDS.items():
+            label, widget = self.field_widgets[path]
+            active = objective == needed_by
+            widget.configure(state="normal" if active else "disabled")
+            label.configure(state="normal" if active else "disabled")
 
     @staticmethod
     def _link_menu(parent, text, postcommand):

@@ -63,7 +63,6 @@ FIELDS = [
     ("Flight", [
         (("flight", "rail_length"), "Rail length (m)", "float"),
         (("flight", "inclination"), "Inclination (deg from horiz.)", "float"),
-        (("flight", "heading"), "Heading (deg, 0=N)", "float"),
     ]),
     ("Optimizer", [
         (("optimizer", "objective"), "Objective", "combo"),

@@ -277,7 +277,8 @@ def run(config, motor_file=None, mass=None):
         environment=env,
         rail_length=config["flight"]["rail_length"],
         inclination=config["flight"]["inclination"],
-        heading=config["flight"]["heading"],
+        # heading (launch azimuth) is omitted: the ISA standard atmosphere has
+        # zero wind, so it has no effect on a point-mass trajectory.
         simulation_mode="3 DOF",  # required for point-mass models
     )
     return env, flight

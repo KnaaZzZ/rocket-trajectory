@@ -259,16 +259,21 @@ def run(config, motor_file=None, mass=None):
 
     motor = load_point_mass_motor(motor_file)
 
-    # Constant C_d*A: convert reference area to the radius RocketPy expects,
-    # and use the same drag coefficient with the motor on and off.
+    # Only the product C_d*A affects a 3-DOF point-mass trajectory, so we take
+    # a single C_d*A value, fold it entirely into the reference area (radius),
+    # and use a drag coefficient of 1. (Older configs that stored drag and
+    # reference_area separately are still supported via their product.)
     rocket_cfg = config["rocket"]
-    radius = math.sqrt(rocket_cfg["reference_area"] / math.pi)
+    cda = rocket_cfg.get("cda")
+    if cda is None:
+        cda = rocket_cfg["drag"] * rocket_cfg["reference_area"]
+    radius = math.sqrt(cda / math.pi)
     rocket = PointMassRocket(
         radius=radius,
         mass=mass,
         center_of_mass_without_motor=0.0,  # irrelevant for a 3-DOF point mass
-        power_off_drag=rocket_cfg["drag"],
-        power_on_drag=rocket_cfg["drag"],
+        power_off_drag=1.0,  # C_d = 1; the whole C_d*A lives in the area
+        power_on_drag=1.0,
     )
     rocket.add_motor(motor, position=0.0)  # position irrelevant for a point mass
 

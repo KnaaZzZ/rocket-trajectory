@@ -56,9 +56,8 @@ FIELDS = [
         (("environment", "longitude"), "Longitude (deg)", "float"),
         (("environment", "elevation"), "Elevation (m ASL)", "float"),
     ]),
-    ("Rocket (constant C_d*A)", [
-        (("rocket", "drag"), "Drag coefficient C_d", "float"),
-        (("rocket", "reference_area"), "Reference area (m^2)", "float"),
+    ("Rocket", [
+        (("rocket", "cda"), "Drag area C_d·A (m^2)", "float"),
     ]),
     ("Flight", [
         (("flight", "rail_length"), "Rail length (m)", "float"),
@@ -424,8 +423,7 @@ class OptimizerGUI:
 
     # Per-field validation: label + a predicate the numeric value must satisfy.
     _RULES = {
-        ("rocket", "drag"): ("Drag coefficient", lambda v: v >= 0, "must be >= 0"),
-        ("rocket", "reference_area"): ("Reference area", lambda v: v > 0, "must be > 0"),
+        ("rocket", "cda"): ("Drag area C_d·A", lambda v: v > 0, "must be > 0"),
         ("flight", "rail_length"): ("Rail length", lambda v: v > 0, "must be > 0"),
         ("flight", "inclination"): ("Inclination", lambda v: 0 < v <= 90,
                                     "must be within (0, 90]"),

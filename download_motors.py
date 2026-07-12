@@ -32,9 +32,11 @@ def _post(endpoint, payload):
         return json.load(resp)
 
 
-def search_motors(manufacturer, impulse_class=None, max_results=2000):
-    """Return the search result records for a manufacturer (optionally a class)."""
-    payload = {"manufacturer": manufacturer, "maxResults": max_results}
+def search_motors(manufacturer=None, impulse_class=None, max_results=5000):
+    """Return search result records (all manufacturers if ``manufacturer`` is None)."""
+    payload = {"maxResults": max_results}
+    if manufacturer:
+        payload["manufacturer"] = manufacturer
     if impulse_class:
         payload["impulseClass"] = impulse_class
     return _post("search.json", payload).get("results", [])
@@ -59,27 +61,30 @@ def _sanitize(name):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
 
 
-def download_manufacturer(manufacturer="Cesaroni", impulse_class=None,
+def download_manufacturer(manufacturer=None, impulse_class=None,
                           out_dir="data/library"):
-    """Download all RASP motors for a manufacturer into ``out_dir``."""
+    """Download RASP motors into ``out_dir`` (all manufacturers if None)."""
     results = search_motors(manufacturer, impulse_class)
     if not results:
-        print(f"No motors found for {manufacturer!r}"
+        print(f"No motors found for {manufacturer or 'any manufacturer'}"
               f"{f' class {impulse_class}' if impulse_class else ''}.")
         return
 
-    id_to_designation = {r["motorId"]: r["designation"] for r in results}
-    abbrev = _sanitize(results[0].get("manufacturerAbbrev", manufacturer))
-    print(f"Found {len(id_to_designation)} {manufacturer} motors. Downloading...")
+    # Per-motor (abbrev, designation) so an all-manufacturer import names files
+    # by each motor's own manufacturer.
+    id_to_meta = {r["motorId"]: (_sanitize(r.get("manufacturerAbbrev", "Unknown")),
+                                 r["designation"]) for r in results}
+    label = manufacturer or "all manufacturers"
+    print(f"Found {len(id_to_meta)} {label} motors. Downloading...")
 
-    eng_by_id = download_eng_files(list(id_to_designation))
+    eng_by_id = download_eng_files(list(id_to_meta))
 
     os.makedirs(out_dir, exist_ok=True)
-    saved, no_rasp = 0, []
-    for mid, designation in id_to_designation.items():
+    saved, no_rasp = 0, 0
+    for mid, (abbrev, designation) in id_to_meta.items():
         text = eng_by_id.get(mid)
         if not text:
-            no_rasp.append(designation)
+            no_rasp += 1
             continue
         path = os.path.join(out_dir, f"{abbrev}_{_sanitize(designation)}.eng")
         with open(path, "w", encoding="utf-8", newline="\n") as f:
@@ -88,14 +93,13 @@ def download_manufacturer(manufacturer="Cesaroni", impulse_class=None,
 
     print(f"\nSaved {saved} .eng files to {out_dir}/")
     if no_rasp:
-        preview = ", ".join(no_rasp[:8])
-        print(f"{len(no_rasp)} motor(s) had no RASP file and were skipped: "
-              f"{preview}{'...' if len(no_rasp) > 8 else ''}")
+        print(f"{no_rasp} motor(s) had no RASP file and were skipped.")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manufacturer", default="Cesaroni")
+    parser.add_argument("--manufacturer", default=None,
+                        help="Manufacturer name; omit to import all manufacturers")
     parser.add_argument("--impulse-class", default=None,
                         help="Single impulse class letter, e.g. N")
     parser.add_argument("--out", default="data/library", help="Output directory")

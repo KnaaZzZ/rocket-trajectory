@@ -1286,8 +1286,8 @@ class OptimizerGUI:
         self._set_busy(False, "Ready")
         self._open_details_window(motor_file, mass, figures, summary, export)
 
-    # How many plot tiles per row in the details window.
-    _DETAILS_COLUMNS = 2
+    # On-screen width of each full-height plot tile, in inches.
+    _DETAILS_PLOT_WIDTH_IN = 7.5
 
     def _open_details_window(self, motor_file, mass, figures, summary, export):
         win = tk.Toplevel(self.root)
@@ -1295,29 +1295,7 @@ class OptimizerGUI:
         win.geometry("1200x880")
         win.bind("<Escape>", lambda e: win.destroy())
 
-        # Scrollable page: summary across the top, then plots in a grid. Plots
-        # keep their full size (not squeezed to fit width) — scroll sideways.
-        canvas = tk.Canvas(win, highlightthickness=0)
-        vsb = ttk.Scrollbar(win, orient=tk.VERTICAL, command=canvas.yview)
-        hsb = ttk.Scrollbar(win, orient=tk.HORIZONTAL, command=canvas.xview)
-        canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        hsb.pack(side=tk.BOTTOM, fill=tk.X)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        content = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=content, anchor="nw")
-        content.bind("<Configure>",
-                     lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-        def on_wheel(e):
-            canvas.yview_scroll(int(-e.delta / 120), "units")
-
-        def on_shift_wheel(e):
-            canvas.xview_scroll(int(-e.delta / 120), "units")
-        canvas.bind("<MouseWheel>", on_wheel)
-        canvas.bind("<Shift-MouseWheel>", on_shift_wheel)
-
-        ncols = self._DETAILS_COLUMNS
+        # Summary fixed at the top.
         lines = [
             f"Motor:            {motor_name(motor_file)}",
             f"Airframe mass:    {mass:.3f} kg",
@@ -1330,26 +1308,56 @@ class OptimizerGUI:
             "",
             f"Time series exported to: {export}",
         ]
-        tk.Label(content, text="\n".join(lines), justify=tk.LEFT, font=FONT_MONO,
-                 anchor="nw").grid(row=0, column=0, columnspan=ncols, sticky=tk.W,
-                                   padx=12, pady=8)
+        tk.Label(win, text="\n".join(lines), justify=tk.LEFT, font=FONT_MONO,
+                 anchor="nw").pack(anchor=tk.NW, padx=12, pady=8)
 
-        for i, (name, fig) in enumerate(figures):
+        # Plots in a single full-height row, scrolled sideways.
+        canvas = tk.Canvas(win, highlightthickness=0)
+        hsb = ttk.Scrollbar(win, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(xscrollcommand=hsb.set)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        content = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=content, anchor="nw")
+        content.bind("<Configure>",
+                     lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        def on_wheel(e):  # the row is horizontal, so the wheel scrolls sideways
+            canvas.xview_scroll(int(-e.delta / 120), "units")
+        canvas.bind("<MouseWheel>", on_wheel)
+
+        fig_canvases = []
+        for name, fig in figures:
             cell = ttk.Frame(content)
-            cell.grid(row=1 + i // ncols, column=i % ncols, sticky="nw",
-                      padx=8, pady=(0, 8))
+            cell.pack(side=tk.LEFT, fill=tk.Y, padx=8, pady=(0, 4))
             ttk.Label(cell, text=name, font=FONT_SUBHEAD).pack(anchor=tk.W)
-            try:  # larger, uniform tiles so multi-subplot figures stay readable
-                fig.set_size_inches(6.8, 5.0)
-                fig.tight_layout()
-            except Exception:
-                pass
             fig_canvas = FigureCanvasTkAgg(fig, master=cell)
-            fig_canvas.draw()
             widget = fig_canvas.get_tk_widget()
             widget.pack(fill=tk.BOTH, expand=True)
-            widget.bind("<MouseWheel>", on_wheel)          # vertical scroll
-            widget.bind("<Shift-MouseWheel>", on_shift_wheel)  # sideways scroll
+            widget.bind("<MouseWheel>", on_wheel)
+            fig_canvases.append((fig_canvas, fig))
+
+        # Size every plot to the current window height (and follow resizes).
+        dpi = figures[0][1].get_dpi() if figures else 100.0
+        width_in = self._DETAILS_PLOT_WIDTH_IN
+        self._details_resize_job = None
+
+        def resize_plots():
+            height_in = max((canvas.winfo_height() - 30) / dpi, 3.0)
+            for fig_canvas, fig in fig_canvases:
+                fig.set_size_inches(width_in, height_in)
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    pass
+                fig_canvas.draw()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def on_canvas_configure(_e):
+            if self._details_resize_job:
+                win.after_cancel(self._details_resize_job)
+            self._details_resize_job = win.after(150, resize_plots)
+        canvas.bind("<Configure>", on_canvas_configure)
 
     # --- helpers --------------------------------------------------------
     def _set_busy(self, busy, message):

@@ -13,6 +13,7 @@ Columns, left to right:
 Run with:  python gui.py
 """
 
+import copy
 import os
 import threading
 import tkinter as tk
@@ -147,6 +148,9 @@ class OptimizerGUI:
                 field_parent = ttk.Frame(box)  # toggled visible/hidden together
                 field_parent.pack(fill=tk.X)
                 self.env_fields_frame = field_parent
+            elif group_key == "rocket":
+                # Single value vs a sweep of C_d·A values (see _build_cda_controls).
+                field_parent = self._build_cda_controls(box)
             else:
                 field_parent = box
 
@@ -164,24 +168,66 @@ class OptimizerGUI:
                     widget = ttk.Entry(row, textvariable=var, width=17)
                 widget.pack(side=tk.RIGHT)
                 self.field_widgets[path] = (label_widget, widget)
-            preset_mb = self._build_preset_menu(box, group_key)  # below the inputs
-            if group_key == "environment":
-                self._env_preset_mb = preset_mb
+            # The environment group has no presets (just a lat/long/elev triple).
+            if group_key != "environment":
+                mb = self._build_preset_menu(box, group_key)  # below the inputs
+                if group_key == "rocket":
+                    self._cda_preset_mb = mb
 
         # Grey out objective-specific fields when their objective isn't chosen.
         self.vars[("optimizer", "objective")].trace_add(
             "write", lambda *a: self._update_conditional_fields())
         self._update_conditional_fields()
         self._update_environment_fields()
+        self._update_cda_fields()
 
     def _update_environment_fields(self):
-        """Show the environment inputs and presets only when 'Enabled' is ticked."""
+        """Show the environment inputs only when 'Enabled' is ticked."""
         if self.env_enabled.get():
             self.env_fields_frame.pack(fill=tk.X)
-            self._env_preset_mb.pack(anchor=tk.E, pady=(2, 0))
         else:
             self.env_fields_frame.pack_forget()
-            self._env_preset_mb.pack_forget()
+
+    def _build_cda_controls(self, box):
+        """Rocket group: a Single/Sweep C_d·A selector.
+
+        Returns the frame that holds the single-value entry; the generic field
+        loop fills it with the standard ("rocket", "cda") row. The sweep inputs
+        (points / min / max) live in a sibling frame shown only in sweep mode.
+        """
+        self.cda_mode = tk.StringVar(value="single")
+        mode_row = ttk.Frame(box)
+        mode_row.pack(fill=tk.X)
+        ttk.Radiobutton(mode_row, text="Single", value="single",
+                        variable=self.cda_mode,
+                        command=self._update_cda_fields).pack(side=tk.LEFT)
+        ttk.Radiobutton(mode_row, text="Sweep", value="sweep",
+                        variable=self.cda_mode,
+                        command=self._update_cda_fields).pack(side=tk.LEFT, padx=(8, 0))
+
+        self.cda_single_frame = ttk.Frame(box)
+        self.cda_single_frame.pack(fill=tk.X)
+        self.cda_sweep_frame = ttk.Frame(box)
+        self.cda_sweep_frame.pack(fill=tk.X)
+        self.cda_points = tk.StringVar()
+        self.cda_min = tk.StringVar()
+        self.cda_max = tk.StringVar()
+        for label, var in (("Sweep points", self.cda_points),
+                           ("Min C_d·A (m^2)", self.cda_min),
+                           ("Max C_d·A (m^2)", self.cda_max)):
+            row = ttk.Frame(self.cda_sweep_frame)
+            row.pack(fill=tk.X, pady=1)
+            ttk.Label(row, text=label, width=25).pack(side=tk.LEFT)
+            ttk.Entry(row, textvariable=var, width=17).pack(side=tk.RIGHT)
+        return self.cda_single_frame
+
+    def _update_cda_fields(self):
+        """Show either the single C_d·A entry or the sweep inputs."""
+        self.cda_single_frame.pack_forget()
+        self.cda_sweep_frame.pack_forget()
+        frame = (self.cda_sweep_frame if self.cda_mode.get() == "sweep"
+                 else self.cda_single_frame)
+        frame.pack(fill=tk.X, before=self._cda_preset_mb)
 
     # Fields that only apply to a specific objective.
     _CONDITIONAL_FIELDS = {
@@ -426,6 +472,11 @@ class OptimizerGUI:
             var.set(fields.get(self._path_key(path), ""))
         self.env_enabled.set(bool(settings.get("environment_enabled", False)))
         self._update_environment_fields()
+        self.cda_mode.set(settings.get("cda_mode", "single") or "single")
+        self.cda_points.set(settings.get("cda_points", ""))
+        self.cda_min.set(settings.get("cda_min", ""))
+        self.cda_max.set(settings.get("cda_max", ""))
+        self._update_cda_fields()
 
     def _apply_config(self, config):
         """Fill the form fields from a config dict (defaults or a saved run)."""
@@ -441,12 +492,19 @@ class OptimizerGUI:
             except (KeyError, IndexError, TypeError):
                 continue  # leave the field as-is if the config lacks it
             var.set(str(value))
+        # Saved runs are single-C_d·A, so restore single mode with that value.
+        self.cda_mode.set("single")
+        self._update_cda_fields()
 
     def _collect_settings(self):
         return {
             "fields": {self._path_key(p): v.get() for p, v in self.vars.items()},
             "chosen": sorted(self.chosen),
             "environment_enabled": self.env_enabled.get(),
+            "cda_mode": self.cda_mode.get(),
+            "cda_points": self.cda_points.get(),
+            "cda_min": self.cda_min.get(),
+            "cda_max": self.cda_max.get(),
         }
 
     def _apply_chosen(self, names):
@@ -457,6 +515,8 @@ class OptimizerGUI:
 
     def on_clear(self):
         for var in self.vars.values():
+            var.set("")
+        for var in (self.cda_points, self.cda_min, self.cda_max):
             var.set("")
 
     # --- presets (per input group) --------------------------------------
@@ -536,7 +596,12 @@ class OptimizerGUI:
     }
 
     def _read_config(self):
-        """Build a validated config from the form; raise ValueError listing issues."""
+        """Build a validated config from the form and the list of C_d·A values.
+
+        Returns (config, cda_values). In single mode cda_values has one entry
+        (the config's own C_d·A); in sweep mode it is the linspace from the
+        min/max/points inputs. Raises ValueError listing any input problems.
+        """
         cfg = {"environment": {}, "rocket": {}, "flight": {}, "optimizer": {}}
         errors = []
         values = {}
@@ -547,6 +612,10 @@ class OptimizerGUI:
             skip.add(("optimizer", "mach_limit"))
         if objective != "min_mass_for_altitude":
             skip.add(("optimizer", "target_altitude"))
+        # In sweep mode the single C_d·A entry is unused (min/max drive it).
+        sweep = self.cda_mode.get() == "sweep"
+        if sweep:
+            skip.add(("rocket", "cda"))
         # A disabled environment isn't edited; it defaults to (0, 0, 0) below.
         env_enabled = self.env_enabled.get()
         if not env_enabled:
@@ -587,6 +656,11 @@ class OptimizerGUI:
         if lo is not None and hi is not None and lo >= hi:
             errors.append("Mass min must be less than mass max.")
 
+        # C_d·A sweep inputs (only in sweep mode).
+        cda_values = None
+        if sweep:
+            cda_values = self._read_cda_sweep(errors)
+
         if errors:
             raise ValueError("Please fix:\n  - " + "\n  - ".join(errors))
 
@@ -600,7 +674,53 @@ class OptimizerGUI:
             values[("optimizer", "mass_min")], values[("optimizer", "mass_max")])
         if not env_enabled:
             cfg["environment"] = {"latitude": 0.0, "longitude": 0.0, "elevation": 0.0}
-        return cfg
+        if sweep:
+            cfg["rocket"]["cda"] = cda_values[0]  # worker overrides per sweep value
+        else:
+            cda_values = [cfg["rocket"]["cda"]]
+        return cfg, cda_values
+
+    def _read_cda_sweep(self, errors):
+        """Parse the sweep inputs into a linear list of C_d·A values.
+
+        Appends any problems to ``errors`` and returns the value list (or None
+        when the inputs don't yet form a valid range).
+        """
+        def parse_positive(raw, name):
+            raw = raw.strip()
+            if not raw:
+                errors.append(f"{name}: required")
+                return None
+            try:
+                value = float(raw)
+            except ValueError:
+                errors.append(f"{name}: must be a number")
+                return None
+            if value <= 0:
+                errors.append(f"{name}: must be > 0")
+                return None
+            return value
+
+        points = None
+        raw = self.cda_points.get().strip()
+        if not raw:
+            errors.append("Sweep points: required")
+        else:
+            try:
+                points = int(float(raw))
+                if points < 2:
+                    errors.append("Sweep points: must be >= 2")
+                    points = None
+            except ValueError:
+                errors.append("Sweep points: must be a number")
+        cmin = parse_positive(self.cda_min.get(), "Min C_d·A")
+        cmax = parse_positive(self.cda_max.get(), "Max C_d·A")
+        if cmin is not None and cmax is not None and cmin >= cmax:
+            errors.append("Min C_d·A must be less than Max C_d·A.")
+            return None
+        if points and cmin is not None and cmax is not None:
+            return [cmin + (cmax - cmin) * i / (points - 1) for i in range(points)]
+        return None
 
     # --- run optimizer --------------------------------------------------
     def on_run(self):
@@ -611,25 +731,40 @@ class OptimizerGUI:
                                 "Add at least one motor to the Chosen list.")
             return
         try:
-            cfg = self._read_config()
+            cfg, cda_values = self._read_config()
         except ValueError as exc:
             messagebox.showerror("Invalid input", str(exc))
             return
         motor_files = list(self.chosen.values())
-        self.progress.config(maximum=len(motor_files), value=0)
-        self._set_busy(True, f"Optimizing {len(motor_files)} motor(s)...")
-        threading.Thread(target=self._run_worker, args=(cfg, motor_files),
-                         daemon=True).start()
+        self.progress.config(maximum=len(motor_files) * len(cda_values), value=0)
+        if len(cda_values) == 1:
+            message = f"Optimizing {len(motor_files)} motor(s)..."
+        else:
+            message = (f"Sweeping {len(cda_values)} C_d·A values × "
+                       f"{len(motor_files)} motor(s)...")
+        self._set_busy(True, message)
+        threading.Thread(target=self._run_worker,
+                         args=(cfg, cda_values, motor_files), daemon=True).start()
 
-    def _run_worker(self, cfg, motor_files):
-        def progress(done, total, name):
-            self.root.after(0, self._update_progress, done, total, name)
+    def _run_worker(self, cfg, cda_values, motor_files):
+        total = len(cda_values) * len(motor_files)
+        sweep = []
+        base = 0
         try:
-            results = optimize(cfg, motor_files=motor_files, progress=progress)
+            for cda in cda_values:
+                run_cfg = copy.deepcopy(cfg)
+                run_cfg["rocket"]["cda"] = cda
+
+                def progress(done, _n, name, base=base):
+                    self.root.after(0, self._update_progress, base + done, total, name)
+
+                results = optimize(run_cfg, motor_files=motor_files, progress=progress)
+                sweep.append({"cda": cda, "config": run_cfg, "results": results})
+                base += len(motor_files)
         except Exception as exc:
             self.root.after(0, self._run_failed, exc)
             return
-        self.root.after(0, self._run_done, cfg, results)
+        self.root.after(0, self._run_done, cfg, cda_values, sweep)
 
     def _update_progress(self, done, total, name):
         self.progress.config(value=done)
@@ -654,16 +789,25 @@ class OptimizerGUI:
                 f"{m['max_acceleration']:.1f}",
             ))
 
-    def _run_done(self, cfg, results):
-        self.cfg = cfg
-        self.results = results
+    def _run_done(self, cfg, cda_values, sweep):
         objective = cfg["optimizer"]["objective"]
-        self._populate_table(results)
-        store.save_results(cfg, results, objective)  # save this run to history
         store.save_settings(self._collect_settings())
-        self._refresh_recent()
-        self._set_busy(False,
-                       f"Done. {len(results)} configuration(s), ranked by {objective}.")
+        if len(cda_values) == 1:
+            # Single C_d·A: the classic main-table view (also saved to history).
+            entry = sweep[0]
+            self.cfg = entry["config"]
+            self.results = entry["results"]
+            self._populate_table(self.results)
+            store.save_results(self.cfg, self.results, objective)
+            self._refresh_recent()
+            self._set_busy(False, f"Done. {len(self.results)} configuration(s), "
+                                  f"ranked by {objective}.")
+        else:
+            # Sweep: a dedicated matrix + per-C_d·A window.
+            motor_count = len(sweep[0]["results"]) if sweep else 0
+            SweepResultsWindow(self.root, cda_values, sweep, self._start_details)
+            self._set_busy(False, f"Done. Swept {len(cda_values)} C_d·A values × "
+                                  f"{motor_count} motor(s), by {objective}.")
 
     # --- recent runs ----------------------------------------------------
     def _refresh_recent(self):
@@ -1413,6 +1557,185 @@ class MotorBrowser:
             self.on_delete(names)  # let the main window drop them from Chosen
         self._refresh()
         self.status.config(text=f"Deleted {len(names)} motor(s).")
+
+
+class SweepResultsWindow:
+    """Results for a C_d·A sweep.
+
+    A "Summary" tab shows a motor × C_d·A matrix of the objective value (the
+    best C_d·A for each motor is marked with ★), and each C_d·A value gets its
+    own ranked-table tab. Double-clicking any cell or row opens that exact
+    configuration's full plots + CSV via ``on_details(config, motor_file, mass)``.
+    """
+
+    def __init__(self, parent, cda_values, sweep, on_details):
+        self.cda_values = cda_values
+        self.sweep = sweep                 # [{"cda", "config", "results"}]
+        self.on_details = on_details
+        self.objective = sweep[0]["config"]["optimizer"]["objective"]
+
+        # (cda index, motor name) -> result, for cell lookups.
+        self.by = {}
+        for i, entry in enumerate(sweep):
+            for r in entry["results"]:
+                self.by[(i, motor_name(r["motor_file"]))] = r
+        self.motors = self._ordered_motors()
+
+        self.win = tk.Toplevel(parent)
+        self.win.title(f"C_d·A sweep — {self.objective}")
+        self.win.geometry("1120x720")
+        nb = ttk.Notebook(self.win)
+        nb.pack(fill=tk.BOTH, expand=True)
+        self._build_summary(nb)
+        for i, entry in enumerate(sweep):
+            self._build_cda_tab(nb, i, entry)
+
+    # --- objective value helpers ----------------------------------------
+    def _lower_is_better(self):
+        return self.objective == "min_mass_for_altitude"
+
+    def _value(self, r):
+        """(numeric value, display text) of the objective for one result."""
+        m, mass, obj = r["metrics"], r["mass"], self.objective
+        if obj == "min_mass_for_altitude":
+            return mass, f"{mass:.2f} kg"
+        if obj == "apogee_time":
+            return m["apogee_time"], f"{m['apogee_time']:.2f} s"
+        if obj == "max_speed":
+            return m["max_speed"], f"{m['max_speed']:.0f} m/s"
+        if obj == "max_mach":
+            return m["max_mach"], f"{m['max_mach']:.2f} M"
+        if obj == "max_acceleration":
+            return m["max_acceleration"], f"{m['max_acceleration']:.0f} m/s²"
+        return m["apogee"], f"{m['apogee']:.0f} m"   # apogee / apogee_capped_mach
+
+    def _best_index(self, name):
+        """Index of the C_d·A that gives this motor its best converged value."""
+        best_i, best_v = None, None
+        for i in range(len(self.cda_values)):
+            r = self.by.get((i, name))
+            if not r or not r.get("converged", True):
+                continue
+            v = self._value(r)[0]
+            if best_v is None or (v < best_v if self._lower_is_better() else v > best_v):
+                best_v, best_i = v, i
+        return best_i
+
+    def _ordered_motors(self):
+        names = sorted({motor_name(r["motor_file"])
+                        for e in self.sweep for r in e["results"]})
+
+        def key(name):
+            i = self._best_index(name)
+            if i is None:  # no converged result: sort to the bottom
+                return float("inf") if self._lower_is_better() else float("-inf")
+            return self._value(self.by[(i, name)])[0]
+
+        return sorted(names, key=key, reverse=not self._lower_is_better())
+
+    # --- summary matrix -------------------------------------------------
+    def _build_summary(self, nb):
+        tab = ttk.Frame(nb)
+        nb.add(tab, text="Summary")
+        ttk.Label(
+            tab, wraplength=1060, justify=tk.LEFT,
+            text=(f"Best {self.objective} per motor across C_d·A values "
+                  "(★ = best C_d·A for that motor; ✗ = did not converge). "
+                  "Double-click a cell for that flight's plots.")).pack(
+            anchor=tk.W, padx=8, pady=(8, 4))
+
+        cols = ["motor"] + [f"c{i}" for i in range(len(self.cda_values))]
+        table = ttk.Frame(tab)
+        table.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        tree = ttk.Treeview(table, columns=cols, show="headings")
+        tree.heading("motor", text="Motor")
+        tree.column("motor", width=180, anchor=tk.W)
+        for i, cda in enumerate(self.cda_values):
+            tree.heading(f"c{i}", text=f"{cda:.4g}")
+            tree.column(f"c{i}", width=110, anchor=tk.E)
+        tree.tag_configure("invalid", foreground="#c00000")
+
+        for name in self.motors:
+            best_i = self._best_index(name)
+            row = [name]
+            for i in range(len(self.cda_values)):
+                r = self.by.get((i, name))
+                if not r:
+                    row.append("—")
+                    continue
+                text = self._value(r)[1]
+                if not r.get("converged", True):
+                    text = f"({text}) ✗"
+                elif i == best_i:
+                    text = f"★ {text}"
+                row.append(text)
+            tree.insert("", tk.END, iid=name, values=row)
+
+        vsb = ttk.Scrollbar(table, orient=tk.VERTICAL, command=tree.yview)
+        hsb = ttk.Scrollbar(table, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        table.rowconfigure(0, weight=1)
+        table.columnconfigure(0, weight=1)
+        tree.bind("<Double-1>", lambda e: self._open_cell(tree, e))
+
+    def _open_cell(self, tree, event):
+        name = tree.identify_row(event.y)
+        col = tree.identify_column(event.x)  # "#1" = motor, "#2".. = C_d·A columns
+        if not name or not col:
+            return
+        idx = int(col[1:]) - 2               # column -> C_d·A index
+        if idx < 0:                          # clicked the motor name: use its best
+            idx = self._best_index(name)
+        if idx is None:
+            return
+        r = self.by.get((idx, name))
+        if r:
+            self.on_details(self.sweep[idx]["config"], r["motor_file"], r["mass"])
+
+    # --- per-C_d·A ranked tab -------------------------------------------
+    def _build_cda_tab(self, nb, index, entry):
+        tab = ttk.Frame(nb)
+        nb.add(tab, text=f"C_d·A={entry['cda']:.4g}")
+        cols = [c[0] for c in TABLE_COLUMNS]
+        tree = ttk.Treeview(tab, columns=cols, show="headings")
+        for key, heading, width in TABLE_COLUMNS:
+            tree.heading(key, text=heading)
+            tree.column(key, width=width, anchor=tk.W if key == "motor" else tk.E)
+        tree.tag_configure("invalid", foreground="#c00000")
+
+        order = {}
+        rank = 0
+        for row_i, r in enumerate(entry["results"]):
+            m = r["metrics"]
+            if r.get("converged", True):
+                rank += 1
+                rank_text, tags = str(rank), ()
+            else:
+                rank_text, tags = "—", ("invalid",)
+            iid = str(row_i)
+            order[iid] = r
+            tree.insert("", tk.END, iid=iid, tags=tags, values=(
+                rank_text, motor_name(r["motor_file"]), f"{r['mass']:.2f}",
+                f"{m['apogee']:.1f}", f"{m['apogee_time']:.2f}",
+                f"{m['max_speed']:.1f}", f"{m['max_mach']:.2f}",
+                f"{m['max_acceleration']:.1f}"))
+
+        vsb = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        cfg = entry["config"]
+
+        def open_row(event):
+            r = order.get(tree.identify_row(event.y))
+            if r:
+                self.on_details(cfg, r["motor_file"], r["mass"])
+
+        tree.bind("<Double-1>", open_row)
 
 
 def main():

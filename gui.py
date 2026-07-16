@@ -14,6 +14,7 @@ Run with:  python gui.py
 """
 
 import copy
+import csv
 import os
 import threading
 import tkinter as tk
@@ -125,6 +126,34 @@ def _remember_dir(path):
     store.save_settings(settings)
 
 
+def _tree_rows(tree, iids=None):
+    """The displayed cell values of ``tree`` (all rows, or the given iids)."""
+    return [tree.item(iid, "values") for iid in (iids or tree.get_children())]
+
+
+def _copy_tree_selection(tree, header):
+    """Copy the selected rows (or all, if none selected) to the clipboard, TSV."""
+    rows = _tree_rows(tree, tree.selection() or None)
+    text = "\n".join("\t".join(str(c) for c in row) for row in [header, *rows])
+    tree.clipboard_clear()
+    tree.clipboard_append(text)
+
+
+def _export_rows_csv(parent, header, rows, default_name):
+    """Prompt for a path and write ``header`` + ``rows`` as CSV."""
+    path = filedialog.asksaveasfilename(
+        parent=parent, title="Export table to CSV", defaultextension=".csv",
+        initialfile=default_name, initialdir=_last_dir(),
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")])
+    if not path:
+        return
+    _remember_dir(path)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+
 class OptimizerGUI:
     def __init__(self, root):
         self.root = root
@@ -148,6 +177,11 @@ class OptimizerGUI:
         self.saved_configs = store.load_saved_configs()
         self.settings = store.load_settings()
         self.body = ttk.Frame(root)
+        # Persistent status bar (always-visible current state): pack before the
+        # body so it reserves the bottom strip.
+        self.statusbar = ttk.Label(root, relief=tk.SUNKEN, anchor=tk.W,
+                                    padding=(8, 2), foreground=COLOR_MUTED)
+        self.statusbar.pack(side=tk.BOTTOM, fill=tk.X)
         self.body.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self._build_config_panel()
         self._build_motor_panel()
@@ -223,6 +257,16 @@ class OptimizerGUI:
         self._update_environment_fields()
         self._update_cda_fields()
 
+    def _update_statusbar(self):
+        """Refresh the always-visible objective / mode / motor-count line."""
+        if not hasattr(self, "statusbar"):
+            return
+        objective = self.vars[("optimizer", "objective")].get() or "—"
+        mode = "sweep" if self.cda_mode.get() == "sweep" else "single"
+        self.statusbar.config(
+            text=f"Objective: {objective}    ·    C_d·A: {mode}    "
+                 f"·    {len(self.chosen)} motor(s) chosen")
+
     def _update_environment_fields(self):
         """Enable the environment inputs only when 'Enabled' is ticked; when off
         they are greyed out and the launch site defaults to (0, 0, 0)."""
@@ -272,6 +316,7 @@ class OptimizerGUI:
         frame = (self.cda_sweep_frame if self.cda_mode.get() == "sweep"
                  else self.cda_single_frame)
         frame.pack(fill=tk.X, before=self._cda_preset_mb)
+        self._update_statusbar()
 
     # Fields that only apply to a specific objective.
     _CONDITIONAL_FIELDS = {
@@ -286,6 +331,7 @@ class OptimizerGUI:
             active = objective == needed_by
             widget.configure(state="normal" if active else "disabled")
             label.configure(state="normal" if active else "disabled")
+        self._update_statusbar()
 
     @staticmethod
     def _link_menu(parent, text, postcommand):
@@ -390,6 +436,8 @@ class OptimizerGUI:
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", lambda e: self.on_show_details())
+        self.tree.bind("<Control-c>", lambda e: _copy_tree_selection(
+            self.tree, [c[1] for c in TABLE_COLUMNS]))
 
         actions = ttk.Frame(right)
         actions.pack(fill=tk.X, pady=(2, 0))
@@ -403,6 +451,8 @@ class OptimizerGUI:
         self.surface_btn.pack(side=tk.LEFT, padx=6)
         ttk.Button(actions, text="Save configuration",
                    command=self.on_save_config).pack(side=tk.LEFT, padx=6)
+        ttk.Button(actions, text="Export CSV",
+                   command=self.on_export_results).pack(side=tk.LEFT)
 
         saved = ttk.Frame(right)
         saved.pack(fill=tk.X, pady=(4, 0))
@@ -465,6 +515,7 @@ class OptimizerGUI:
             self.chosen_list.insert(tk.END, name)
         self.chosen_label.config(
             text=f"Chosen (optimizer runs these): {len(self.chosen)}")
+        self._update_statusbar()
 
     # --- motor presets (named sets of chosen motors) --------------------
     def _populate_motor_preset_menu(self):
@@ -485,6 +536,11 @@ class OptimizerGUI:
                     label=name, command=lambda n=name: self._delete_motor_preset(n))
             menu.add_cascade(label="Delete", menu=submenu)
 
+    def _confirm_overwrite(self, name, existing, kind):
+        """True unless ``name`` already exists and the user declines to overwrite."""
+        return name not in existing or messagebox.askyesno(
+            "Overwrite?", f"A {kind} named '{name}' already exists. Overwrite it?")
+
     def _save_motor_preset(self):
         if not self.chosen:
             messagebox.showinfo("No motors", "Choose motors before saving a preset.")
@@ -493,7 +549,10 @@ class OptimizerGUI:
                                       "Name for this motor set:", parent=self.root)
         if not name or not name.strip():
             return
-        self.motor_presets[name.strip()] = sorted(self.chosen)
+        name = name.strip()
+        if not self._confirm_overwrite(name, self.motor_presets, "motor preset"):
+            return
+        self.motor_presets[name] = sorted(self.chosen)
         store.save_motor_presets(self.motor_presets)
 
     def _load_motor_preset(self, name):
@@ -603,6 +662,14 @@ class OptimizerGUI:
         self.undo_btn.config(state=tk.DISABLED)
         self.status.config(text="Inputs restored.")
 
+    def on_export_results(self):
+        if not self.results:
+            messagebox.showinfo("No results", "Run the optimizer first.")
+            return
+        objective = self.cfg["optimizer"]["objective"] if self.cfg else "results"
+        _export_rows_csv(self.root, [c[1] for c in TABLE_COLUMNS],
+                         _tree_rows(self.tree), f"{objective}_results.csv")
+
     # --- presets (per input group) --------------------------------------
     def _group_paths(self, group_key):
         return [p for p in self.vars if p[0] == group_key]
@@ -631,9 +698,12 @@ class OptimizerGUI:
             "Save preset", f"Name for this {group_key} preset:", parent=self.root)
         if not name or not name.strip():
             return
-        values = {self._path_key(p): self.vars[p].get()
-                  for p in self._group_paths(group_key)}
-        self.presets.setdefault(group_key, {})[name.strip()] = values
+        name = name.strip()
+        group = self.presets.setdefault(group_key, {})
+        if not self._confirm_overwrite(name, group, f"{group_key} preset"):
+            return
+        group[name] = {self._path_key(p): self.vars[p].get()
+                       for p in self._group_paths(group_key)}
         store.save_presets(self.presets)
 
     def _load_preset(self, group_key, name):
@@ -1130,7 +1200,10 @@ class OptimizerGUI:
             "Save configuration", "Name for this configuration:", parent=self.root)
         if not name or not name.strip():
             return
-        self.saved_configs[name.strip()] = {
+        name = name.strip()
+        if not self._confirm_overwrite(name, self.saved_configs, "configuration"):
+            return
+        self.saved_configs[name] = {
             "motor_name": motor_name(result["motor_file"]),
             "motor_file": result["motor_file"],
             "mass": result["mass"],
@@ -1139,7 +1212,7 @@ class OptimizerGUI:
         }
         store.save_saved_configs(self.saved_configs)
         self._refresh_saved_combo()
-        self.saved_combo.set(name.strip())
+        self.saved_combo.set(name)
 
     def _refresh_saved_combo(self):
         names = sorted(self.saved_configs)
@@ -1864,11 +1937,16 @@ class SweepResultsWindow:
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
         tree.bind("<Double-1>", lambda e: self._open_cell(tree, e))
+        header = ["Motor"] + [f"{cda:.4g}" for cda in self.cda_values]
+        tree.bind("<Control-c>", lambda e: _copy_tree_selection(tree, header))
 
         bar = ttk.Frame(tab)
         bar.pack(fill=tk.X, padx=8, pady=(0, 8))
         ttk.Button(bar, text="Objective surface for selected motor",
                    command=self._open_surface).pack(side=tk.LEFT)
+        ttk.Button(bar, text="Export CSV", command=lambda: _export_rows_csv(
+            self.win, header, _tree_rows(tree),
+            f"{self.objective}_sweep_matrix.csv")).pack(side=tk.LEFT, padx=6)
 
     def _open_surface(self):
         """Open the (C_d·A × mass) objective surface for the selected motor."""
@@ -1935,6 +2013,8 @@ class SweepResultsWindow:
                 f"{m['max_speed']:.1f}", f"{m['max_mach']:.2f}",
                 f"{m['max_acceleration']:.1f}"))
 
+        tree.bind("<Control-c>", lambda e: _copy_tree_selection(
+            tree, [c[1] for c in TABLE_COLUMNS]))
         vsb = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscrollcommand=vsb.set)
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)

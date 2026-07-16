@@ -175,11 +175,13 @@ class OptimizerGUI:
         self._update_environment_fields()
 
     def _update_environment_fields(self):
-        """Show the environment inputs only when 'Enabled' is ticked."""
+        """Show the environment inputs and presets only when 'Enabled' is ticked."""
         if self.env_enabled.get():
-            self.env_fields_frame.pack(fill=tk.X, before=self._env_preset_mb)
+            self.env_fields_frame.pack(fill=tk.X)
+            self._env_preset_mb.pack(anchor=tk.E, pady=(2, 0))
         else:
             self.env_fields_frame.pack_forget()
+            self._env_preset_mb.pack_forget()
 
     # Fields that only apply to a specific objective.
     _CONDITIONAL_FIELDS = {

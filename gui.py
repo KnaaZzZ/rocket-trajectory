@@ -28,7 +28,12 @@ from matplotlib.figure import Figure  # noqa: E402
 
 import store  # noqa: E402
 import surface  # noqa: E402
-from optimizer import OptimizationCancelled, make_scorer, optimize  # noqa: E402
+from optimizer import (  # noqa: E402
+    DEFAULT_STARTS,
+    OptimizationCancelled,
+    make_scorer,
+    optimize,
+)
 from simulation import (  # noqa: E402
     LIBRARY_DIR,
     SAVED_DIR,
@@ -77,6 +82,7 @@ FIELDS = [
         (("optimizer", "max_step"), "Max step (kg)", "float"),
         (("optimizer", "tol"), "Tolerance (kg)", "float"),
         (("optimizer", "max_iter"), "Max iterations", "int"),
+        (("optimizer", "n_starts"), "Multi-start restarts", "int"),
     ]),
 ]
 
@@ -601,6 +607,8 @@ class OptimizerGUI:
         ("optimizer", "max_step"): ("Max step", lambda v: v > 0, "must be > 0"),
         ("optimizer", "tol"): ("Tolerance", lambda v: v > 0, "must be > 0"),
         ("optimizer", "max_iter"): ("Max iterations", lambda v: v >= 1, "must be >= 1"),
+        ("optimizer", "n_starts"): ("Multi-start restarts", lambda v: v >= 1,
+                                    "must be >= 1"),
         ("optimizer", "mach_limit"): ("Mach limit", lambda v: v > 0, "must be > 0"),
         ("optimizer", "target_altitude"): ("Target altitude", lambda v: v > 0,
                                            "must be > 0"),
@@ -633,6 +641,9 @@ class OptimizerGUI:
             skip.update([("environment", "latitude"),
                          ("environment", "longitude"),
                          ("environment", "elevation")])
+        # Multi-start restarts is optional; blank means the default.
+        if not self.vars[("optimizer", "n_starts")].get().strip():
+            skip.add(("optimizer", "n_starts"))
 
         for path, var in self.vars.items():
             kind = self._kind_for(path)
@@ -683,6 +694,7 @@ class OptimizerGUI:
             cfg[section][key] = value
         cfg["optimizer"]["mass_bounds"] = (
             values[("optimizer", "mass_min")], values[("optimizer", "mass_max")])
+        cfg["optimizer"].setdefault("n_starts", DEFAULT_STARTS)
         if not env_enabled:
             cfg["environment"] = {"latitude": 0.0, "longitude": 0.0, "elevation": 0.0}
         if sweep:

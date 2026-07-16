@@ -68,18 +68,34 @@ def _clamp(value, bounds):
     return max(lo, min(hi, value))
 
 
-def optimize_mass(config, motor_file, opt=None):
-    """Gradient-ascent on airframe mass to maximize the objective for one motor.
+DEFAULT_STARTS = 4  # multi-start restarts when the config doesn't specify one
 
-    Uses a central finite-difference gradient for the ascent direction and a
-    full ``max_step`` trial with backtracking for the magnitude. The trial size
-    is deliberately independent of the gradient magnitude, which varies by
-    orders of magnitude across objectives (hundreds of m/kg for apogee, ~1 for
-    min-mass). Returns the motor file, best mass, full metrics, and eval count.
+
+def _start_masses(opt, bounds):
+    """Starting masses for the multi-start ascent.
+
+    ``n_starts`` == 1 reproduces the classic single ascent from ``mass_initial``.
+    For more, spread the starts evenly across the mass bounds (so a quirky,
+    multi-modal objective curve is sampled from several basins) and always
+    include the user's ``mass_initial`` guess.
     """
-    opt = opt or config["optimizer"]
-    score = make_scorer(opt)
-    bounds = opt["mass_bounds"]
+    lo, hi = bounds
+    initial = _clamp(opt["mass_initial"], bounds)
+    n = max(1, int(opt.get("n_starts", DEFAULT_STARTS)))
+    if n <= 1 or hi <= lo:
+        return [initial]
+    grid = [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+    return sorted(set(grid + [initial]))
+
+
+def _ascend(config, motor_file, opt, score, bounds, start_mass):
+    """One gradient ascent from ``start_mass``; returns (mass, score, n_evals).
+
+    Central finite-difference gradient for the direction and a full ``max_step``
+    trial with backtracking for the magnitude. The trial size is deliberately
+    independent of the gradient magnitude, which varies by orders of magnitude
+    across objectives (hundreds of m/kg for apogee, ~1 for min-mass).
+    """
     h = opt["fd_step"]
     max_step = opt["max_step"]
     tol = opt["tol"]
@@ -90,7 +106,7 @@ def optimize_mass(config, motor_file, opt=None):
         evals["n"] += 1
         return score(evaluate(config, motor_file, mass), mass)
 
-    mass = _clamp(opt["mass_initial"], bounds)
+    mass = _clamp(start_mass, bounds)
     best = f(mass)
 
     for _ in range(opt["max_iter"]):
@@ -120,12 +136,36 @@ def optimize_mass(config, motor_file, opt=None):
         if not improved:  # converged: no improving step found
             break
 
+    return mass, best, evals["n"]
+
+
+def optimize_mass(config, motor_file, opt=None):
+    """Multi-start gradient ascent on airframe mass for one motor.
+
+    Runs :func:`_ascend` from several starting masses (see ``n_starts`` /
+    :func:`_start_masses`) and keeps the best result, guarding against a motor
+    whose objective-vs-mass curve isn't cleanly unimodal. Returns the motor
+    file, best mass, full metrics, and total eval count.
+    """
+    opt = opt or config["optimizer"]
+    score = make_scorer(opt)
+    bounds = opt["mass_bounds"]
+
+    total_evals = 0
+    best_mass = None
+    best_score = None
+    for start in _start_masses(opt, bounds):
+        mass, value, n = _ascend(config, motor_file, opt, score, bounds, start)
+        total_evals += n
+        if best_score is None or value > best_score:
+            best_mass, best_score = mass, value
+
     return {
         "motor_file": motor_file,
-        "mass": mass,
-        "score": best,
-        "metrics": evaluate(config, motor_file, mass),
-        "evaluations": evals["n"] + 1,
+        "mass": best_mass,
+        "score": best_score,
+        "metrics": evaluate(config, motor_file, best_mass),
+        "evaluations": total_evals + 1,
     }
 
 

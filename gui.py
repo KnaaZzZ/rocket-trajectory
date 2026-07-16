@@ -455,9 +455,17 @@ class OptimizerGUI:
         self.recent_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
         ttk.Button(recent, text="Open", command=self.on_open_recent).pack(side=tk.LEFT)
 
-        ttk.Label(right, text="Configurations (ranked by objective)",
+        # Results area swaps between the single-C_d·A table and the sweep view.
+        self.results_area = ttk.Frame(right)
+        self.results_area.pack(fill=tk.BOTH, expand=True)
+        self.sweep_frame = None  # holds the sweep matrix/tabs while in sweep mode
+        self.single_frame = ttk.Frame(self.results_area)
+        self.single_frame.pack(fill=tk.BOTH, expand=True)
+        single = self.single_frame
+
+        ttk.Label(single, text="Configurations (ranked by objective)",
                   font=FONT_HEADING).pack(anchor=tk.W)
-        table = ttk.Frame(right)
+        table = ttk.Frame(single)
         table.pack(fill=tk.BOTH, expand=True, pady=6)
         cols = [c[0] for c in TABLE_COLUMNS]
         self.tree = ttk.Treeview(table, columns=cols, show="headings", height=20)
@@ -476,7 +484,7 @@ class OptimizerGUI:
         self.tree.bind("<Control-c>", lambda e: _copy_tree_selection(
             self.tree, [c[1] for c in TABLE_COLUMNS]))
 
-        actions = ttk.Frame(right)
+        actions = ttk.Frame(single)
         actions.pack(fill=tk.X, pady=(2, 0))
         self.details_btn = ttk.Button(
             actions, text="Show data & plots (or double-click a row)",
@@ -491,7 +499,7 @@ class OptimizerGUI:
         ttk.Button(actions, text="Export CSV",
                    command=self.on_export_results).pack(side=tk.LEFT)
 
-        saved = ttk.Frame(right)
+        saved = ttk.Frame(single)
         saved.pack(fill=tk.X, pady=(4, 0))
         ttk.Label(saved, text="Saved configs:").pack(side=tk.LEFT)
         self.saved_combo = ttk.Combobox(saved, state="readonly")
@@ -501,6 +509,24 @@ class OptimizerGUI:
         ttk.Button(saved, text="Del", command=self.on_delete_saved_config).pack(
             side=tk.LEFT)
         self._refresh_saved_combo()
+
+    def _show_single_results(self):
+        """Show the ranked-table view (single C_d·A); drop any sweep view."""
+        if self.sweep_frame is not None:
+            self.sweep_frame.destroy()
+            self.sweep_frame = None
+        if not self.single_frame.winfo_ismapped():
+            self.single_frame.pack(fill=tk.BOTH, expand=True)
+
+    def _show_sweep_results(self, cda_values, sweep):
+        """Show the sweep matrix + per-C_d·A tabs in place of the single table."""
+        self.single_frame.pack_forget()
+        if self.sweep_frame is not None:
+            self.sweep_frame.destroy()
+        self.sweep_frame = ttk.Frame(self.results_area)
+        self.sweep_frame.pack(fill=tk.BOTH, expand=True)
+        SweepResultsView(self.sweep_frame, cda_values, sweep,
+                         self._start_details, self._start_surface)
 
     # --- motor list logic -----------------------------------------------
     def _load_library(self):
@@ -1011,20 +1037,20 @@ class OptimizerGUI:
         self.cancel_btn.config(state=tk.DISABLED)
         store.save_settings(self._collect_settings())
         if len(cda_values) == 1:
-            # Single C_d·A: the classic main-table view (also saved to history).
+            # Single C_d·A: the classic ranked-table view (also saved to history).
             entry = sweep[0]
             self.cfg = entry["config"]
             self.results = entry["results"]
+            self._show_single_results()
             self._populate_table(self.results)
             store.save_results(self.cfg, self.results, objective)
             self._refresh_recent()
             self._set_busy(False, f"Done. {len(self.results)} configuration(s), "
                                   f"ranked by {objective}.")
         else:
-            # Sweep: a dedicated matrix + per-C_d·A window.
+            # Sweep: the matrix + per-C_d·A tabs, embedded in the main window.
             motor_count = len(sweep[0]["results"]) if sweep else 0
-            SweepResultsWindow(self.root, cda_values, sweep, self._start_details,
-                               self._start_surface)
+            self._show_sweep_results(cda_values, sweep)
             self._set_busy(False, f"Done. Swept {len(cda_values)} C_d·A values × "
                                   f"{motor_count} motor(s), by {objective}.")
 
@@ -1065,6 +1091,7 @@ class OptimizerGUI:
             pass
         self.cfg = cfg
         self.results = payload.get("results", [])
+        self._show_single_results()  # saved/recent runs are single-C_d·A
         self._populate_table(self.results)
         if update_inputs:
             self._apply_config(cfg)
@@ -1867,16 +1894,17 @@ class MotorBrowser:
         self.status.config(text=f"Deleted {len(names)} motor(s).")
 
 
-class SweepResultsWindow:
-    """Results for a C_d·A sweep.
+class SweepResultsView:
+    """Embeddable results view for a C_d·A sweep (built into ``parent``).
 
     A "Summary" tab shows a motor × C_d·A matrix of the objective value (the
-    best C_d·A for each motor is marked with ★), and each C_d·A value gets its
+    best motor for each C_d·A is marked with ★), and each C_d·A value gets its
     own ranked-table tab. Double-clicking any cell or row opens that exact
     configuration's full plots + CSV via ``on_details(config, motor_file, mass)``.
     """
 
     def __init__(self, parent, cda_values, sweep, on_details, on_surface):
+        self.parent = parent
         self.cda_values = cda_values
         self.sweep = sweep                 # [{"cda", "config", "results"}]
         self.on_details = on_details
@@ -1890,11 +1918,7 @@ class SweepResultsWindow:
                 self.by[(i, motor_name(r["motor_file"]))] = r
         self.motors = self._ordered_motors()
 
-        self.win = tk.Toplevel(parent)
-        self.win.title(f"C_d·A sweep — {self.objective}")
-        self.win.geometry("1120x720")
-        self.win.bind("<Escape>", lambda e: self.win.destroy())
-        nb = ttk.Notebook(self.win)
+        nb = ttk.Notebook(parent)
         nb.pack(fill=tk.BOTH, expand=True)
         self._build_summary(nb)
         for i, entry in enumerate(sweep):
@@ -1931,6 +1955,18 @@ class SweepResultsWindow:
                 best_v, best_i = v, i
         return best_i
 
+    def _best_motor(self, i):
+        """The motor that best reaches the goal at C_d·A column ``i`` (or None)."""
+        best_name, best_v = None, None
+        for name in self.motors:
+            r = self.by.get((i, name))
+            if not r or not r.get("converged", True):
+                continue
+            v = self._value(r)[0]
+            if best_v is None or (v < best_v if self._lower_is_better() else v > best_v):
+                best_v, best_name = v, name
+        return best_name
+
     def _ordered_motors(self):
         names = sorted({motor_name(r["motor_file"])
                         for e in self.sweep for r in e["results"]})
@@ -1949,8 +1985,8 @@ class SweepResultsWindow:
         nb.add(tab, text="Summary")
         ttk.Label(
             tab, wraplength=1060, justify=tk.LEFT,
-            text=(f"Best {self.objective} per motor across C_d·A values "
-                  "(★ = best C_d·A for that motor; ✗ = did not converge). "
+            text=(f"{self.objective} per motor × C_d·A "
+                  "(★ = best motor for that C_d·A; ✗ = did not converge). "
                   "Double-click a cell for that flight's plots.")).pack(
             anchor=tk.W, padx=8, pady=(8, 4))
 
@@ -1966,8 +2002,9 @@ class SweepResultsWindow:
             tree.column(f"c{i}", width=110, anchor=tk.E)
         tree.tag_configure("invalid", foreground=COLOR_ERROR)
 
+        # Best motor per C_d·A column (the config that reaches the goal best).
+        best_by_col = {i: self._best_motor(i) for i in range(len(self.cda_values))}
         for name in self.motors:
-            best_i = self._best_index(name)
             row = [name]
             for i in range(len(self.cda_values)):
                 r = self.by.get((i, name))
@@ -1977,7 +2014,7 @@ class SweepResultsWindow:
                 text = self._value(r)[1]
                 if not r.get("converged", True):
                     text = f"({text}) ✗"
-                elif i == best_i:
+                elif best_by_col[i] == name:
                     text = f"★ {text}"
                 row.append(text)
             tree.insert("", tk.END, iid=name, values=row)
@@ -1999,7 +2036,7 @@ class SweepResultsWindow:
         ttk.Button(bar, text="Objective surface for selected motor",
                    command=self._open_surface).pack(side=tk.LEFT)
         ttk.Button(bar, text="Export CSV", command=lambda: _export_rows_csv(
-            self.win, header, _tree_rows(tree),
+            self.parent, header, _tree_rows(tree),
             f"{self.objective}_sweep_matrix.csv")).pack(side=tk.LEFT, padx=6)
 
     def _open_surface(self):
@@ -2007,7 +2044,7 @@ class SweepResultsWindow:
         sel = self.summary_tree.selection()
         if not sel:
             messagebox.showinfo("No selection", "Select a motor row first.",
-                                parent=self.win)
+                                parent=self.parent)
             return
         name = sel[0]                       # summary rows use the motor name as iid
         score_fn = make_scorer(self.sweep[0]["config"]["optimizer"])

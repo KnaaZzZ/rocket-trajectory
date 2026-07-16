@@ -1576,21 +1576,25 @@ class MotorBrowser:
         self.search_entry.pack(fill=tk.X)
         self.search_var.trace_add("write", lambda *a: self._refresh())
 
-        # Manufacturers: multi-checkbox --------------------------------
+        # Manufacturers: a dropdown of checkable items (compact vs a long list).
         ttk.Separator(side).pack(fill=tk.X, pady=10)
-        header = ttk.Frame(side)
-        header.pack(fill=tk.X)
-        ttk.Label(header, text="Manufacturers").pack(side=tk.LEFT)
-        ttk.Button(header, text="None", width=5,
-                   command=lambda: self._set_all_manufacturers(False)).pack(side=tk.RIGHT)
-        ttk.Button(header, text="All", width=4,
-                   command=lambda: self._set_all_manufacturers(True)).pack(side=tk.RIGHT)
+        ttk.Label(side, text="Manufacturers").pack(anchor=tk.W)
+        self.manuf_button = ttk.Menubutton(side, text="All manufacturers")
+        menu = tk.Menu(self.manuf_button, tearoff=0)
+        self.manuf_button["menu"] = menu
+        self.manuf_button.pack(fill=tk.X)
+        menu.add_command(label="Select all",
+                         command=lambda: self._set_all_manufacturers(True))
+        menu.add_command(label="Select none",
+                         command=lambda: self._set_all_manufacturers(False))
+        menu.add_separator()
         self.manuf_vars = {}
         for m in sorted({r["manufacturer"] for r in self.catalog}):
             var = tk.BooleanVar(value=True)
             self.manuf_vars[m] = var
-            ttk.Checkbutton(side, text=m, variable=var,
-                            command=self._refresh).pack(anchor=tk.W)
+            menu.add_checkbutton(label=m, variable=var,
+                                 command=self._on_manufacturers_changed)
+        self._update_manuf_button()
 
         # Range sliders -------------------------------------------------
         ttk.Separator(side).pack(fill=tk.X, pady=10)
@@ -1638,7 +1642,20 @@ class MotorBrowser:
     def _set_all_manufacturers(self, value):
         for var in self.manuf_vars.values():
             var.set(value)
+        self._on_manufacturers_changed()
+
+    def _on_manufacturers_changed(self):
+        self._update_manuf_button()
         self._refresh()
+
+    def _update_manuf_button(self):
+        """Label the dropdown with how many manufacturers are selected."""
+        total = len(self.manuf_vars)
+        n = sum(v.get() for v in self.manuf_vars.values())
+        text = ("All manufacturers" if n == total
+                else "No manufacturers" if n == 0
+                else f"{n} of {total} manufacturers")
+        self.manuf_button.config(text=text)
 
     def _build_tables(self):
         container = ttk.Frame(self.win, padding=(0, 8))

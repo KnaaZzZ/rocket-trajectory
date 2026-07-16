@@ -18,7 +18,9 @@ data/results/
 
 # Editor / IDE
 .vscode/
-.claude/settings.local.json
+
+# Claude Code (keep local, not on the remote)
+.claude/
 
 # OS
 Thumbs.db

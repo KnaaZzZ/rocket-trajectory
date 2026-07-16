@@ -508,12 +508,13 @@ class OptimizerGUI:
             state=tk.DISABLED)
         self.surface_btn.pack(side=tk.LEFT, padx=6)
 
-        # Legend at the bottom of the single view.
+        # Legend at the bottom of the single view (one item per row).
         ttk.Label(
-            single, foreground=COLOR_MUTED, wraplength=700, justify=tk.LEFT,
-            text=("▲ optimum hit the Mass max bound (peak not reached — raise "
-                  "Mass max).   ▼ hit the Mass min bound (lower Mass min).   "
-                  "Red = did not converge.")).pack(anchor=tk.W, pady=(4, 0))
+            single, foreground=COLOR_MUTED, justify=tk.LEFT,
+            text=("▲ = optimum hit the Mass max bound (peak not reached — "
+                  "raise Mass max)\n"
+                  "▼ = optimum hit the Mass min bound (lower Mass min)\n"
+                  "Red = did not converge")).pack(anchor=tk.W, pady=(4, 0))
 
     def _show_single_results(self):
         """Show the ranked-table view (single C_d·A); drop any sweep view."""
@@ -2150,13 +2151,14 @@ class SweepResultsView:
             self.parent, header, _tree_rows(tree),
             f"{self.objective}_sweep_matrix.csv")).pack(side=tk.LEFT, padx=6)
 
-        # Legend at the bottom.
+        # Legend at the bottom (one item per row).
         ttk.Label(
-            tab, foreground=COLOR_MUTED, wraplength=1000, justify=tk.LEFT,
-            text=(f"{self.objective} per motor × C_d·A.   "
-                  "★ = best motor for that C_d·A;   ✗ = did not converge;   "
-                  "▲/▼ = optimum hit the Mass max/min bound (peak not reached).   "
-                  "Double-click a cell for that flight's plots.")).pack(
+            tab, foreground=COLOR_MUTED, justify=tk.LEFT,
+            text=(f"{self.objective} per motor × C_d·A\n"
+                  "★ = best motor for that C_d·A\n"
+                  "✗ = did not converge\n"
+                  "▲/▼ = optimum hit the Mass max/min bound (peak not reached)\n"
+                  "Double-click a cell for that flight's plots")).pack(
             anchor=tk.W, padx=8, pady=(0, 8))
 
     def _open_surface(self):

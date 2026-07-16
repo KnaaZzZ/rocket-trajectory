@@ -136,10 +136,14 @@ class OptimizerGUI:
             box.pack(fill=tk.X, pady=3)
 
             if group_key == "environment":
+                # Title + "enabled" tick box share the label frame's title line.
+                title = ttk.Frame(box)
+                ttk.Label(title, text=group_name).pack(side=tk.LEFT)
                 ttk.Checkbutton(
-                    box, text="Enabled (set a specific launch site)",
-                    variable=self.env_enabled,
-                    command=self._update_environment_fields).pack(anchor=tk.W)
+                    title, text="enabled", variable=self.env_enabled,
+                    command=self._update_environment_fields).pack(
+                        side=tk.LEFT, padx=(6, 0))
+                box.configure(labelwidget=title)
                 field_parent = ttk.Frame(box)  # toggled visible/hidden together
                 field_parent.pack(fill=tk.X)
                 self.env_fields_frame = field_parent

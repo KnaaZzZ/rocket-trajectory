@@ -1285,13 +1285,16 @@ class OptimizerGUI:
         self._set_busy(False, "Ready")
         self._open_details_window(motor_file, mass, figures, summary, export)
 
+    # How many plot tiles per row in the details window.
+    _DETAILS_COLUMNS = 2
+
     def _open_details_window(self, motor_file, mass, figures, summary, export):
         win = tk.Toplevel(self.root)
         win.title(f"{motor_name(motor_file)} @ {mass:.2f} kg")
-        win.geometry("1000x760")
+        win.geometry("1180x820")
         win.bind("<Escape>", lambda e: win.destroy())
 
-        # One scrollable page holding the summary and every plot stacked.
+        # Scrollable page: summary across the top, then plots in a grid.
         canvas = tk.Canvas(win, highlightthickness=0)
         vsb = ttk.Scrollbar(win, orient=tk.VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
@@ -1307,6 +1310,10 @@ class OptimizerGUI:
             canvas.yview_scroll(int(-e.delta / 120), "units")
         canvas.bind("<MouseWheel>", on_wheel)
 
+        ncols = self._DETAILS_COLUMNS
+        for c in range(ncols):
+            content.columnconfigure(c, weight=1)
+
         lines = [
             f"Motor:            {motor_name(motor_file)}",
             f"Airframe mass:    {mass:.3f} kg",
@@ -1319,16 +1326,24 @@ class OptimizerGUI:
             "",
             f"Time series exported to: {export}",
         ]
-        tk.Label(content, text="\n".join(lines), justify=tk.LEFT,
-                 font=FONT_MONO, anchor="nw").pack(anchor=tk.NW, padx=12, pady=8)
+        tk.Label(content, text="\n".join(lines), justify=tk.LEFT, font=FONT_MONO,
+                 anchor="nw").grid(row=0, column=0, columnspan=ncols, sticky=tk.W,
+                                   padx=12, pady=8)
 
-        for name, fig in figures:
-            ttk.Label(content, text=name, font=FONT_SUBHEAD).pack(
-                anchor=tk.W, padx=12, pady=(10, 0))
-            fig_canvas = FigureCanvasTkAgg(fig, master=content)
+        for i, (name, fig) in enumerate(figures):
+            cell = ttk.Frame(content)
+            cell.grid(row=1 + i // ncols, column=i % ncols, sticky="nsew",
+                      padx=8, pady=(0, 8))
+            ttk.Label(cell, text=name, font=FONT_SUBHEAD).pack(anchor=tk.W)
+            try:  # uniform tile size so the plots form a tidy grid
+                fig.set_size_inches(5.2, 3.6)
+                fig.tight_layout()
+            except Exception:
+                pass
+            fig_canvas = FigureCanvasTkAgg(fig, master=cell)
             fig_canvas.draw()
             widget = fig_canvas.get_tk_widget()
-            widget.pack(fill=tk.X, padx=12, pady=(0, 6))
+            widget.pack(fill=tk.BOTH, expand=True)
             widget.bind("<MouseWheel>", on_wheel)  # keep wheel scrolling over plots
 
     # --- helpers --------------------------------------------------------

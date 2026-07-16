@@ -159,3 +159,11 @@ def load_results(path):
     """Load a saved run; return the payload dict (config, objective, results)."""
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def delete_result(path):
+    """Delete a saved-run file from the history (best effort)."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass

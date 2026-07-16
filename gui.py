@@ -126,6 +126,21 @@ def _remember_dir(path):
     store.save_settings(settings)
 
 
+def _bound_flag(mass, bounds, tol):
+    """Marker when the optimum landed on a mass bound (peak not reached in range).
+
+    ``▲`` = at the max bound (wants more mass — raise Mass max); ``▼`` = at the
+    min bound (wants less mass — lower Mass min); "" = an interior optimum.
+    """
+    lo, hi = bounds
+    tol = max(tol, 1e-9)
+    if hi - mass <= tol:
+        return "▲"
+    if mass - lo <= tol:
+        return "▼"
+    return ""
+
+
 def _tree_rows(tree, iids=None):
     """The displayed cell values of ``tree`` (all rows, or the given iids)."""
     return [tree.item(iid, "values") for iid in (iids or tree.get_children())]
@@ -454,6 +469,7 @@ class OptimizerGUI:
         self.progress = ttk.Progressbar(right, mode="determinate")
         self.progress.pack(fill=tk.X, pady=4)
 
+        ttk.Label(right, text="Results", font=FONT_HEADING).pack(anchor=tk.W)
         # Results area swaps between the single-C_d·A table and the sweep view.
         self.results_area = ttk.Frame(right)
         self.results_area.pack(fill=tk.BOTH, expand=True)
@@ -462,8 +478,6 @@ class OptimizerGUI:
         self.single_frame.pack(fill=tk.BOTH, expand=True)
         single = self.single_frame
 
-        ttk.Label(single, text="Configurations (ranked by objective)",
-                  font=FONT_HEADING).pack(anchor=tk.W)
         table = ttk.Frame(single)
         table.pack(fill=tk.BOTH, expand=True, pady=6)
         cols = [c[0] for c in TABLE_COLUMNS]
@@ -493,6 +507,13 @@ class OptimizerGUI:
             actions, text="Objective vs mass", command=self.on_show_surface,
             state=tk.DISABLED)
         self.surface_btn.pack(side=tk.LEFT, padx=6)
+
+        # Legend at the bottom of the single view.
+        ttk.Label(
+            single, foreground=COLOR_MUTED, wraplength=700, justify=tk.LEFT,
+            text=("▲ optimum hit the Mass max bound (peak not reached — raise "
+                  "Mass max).   ▼ hit the Mass min bound (lower Mass min).   "
+                  "Red = did not converge.")).pack(anchor=tk.W, pady=(4, 0))
 
     def _show_single_results(self):
         """Show the ranked-table view (single C_d·A); drop any sweep view."""
@@ -999,6 +1020,8 @@ class OptimizerGUI:
     def _populate_table(self, results):
         self.tree.delete(*self.tree.get_children())
         self.tree.tag_configure("invalid", foreground=COLOR_ERROR)
+        bounds = (self.cfg or {}).get("optimizer", {}).get("mass_bounds")
+        tol = (self.cfg or {}).get("optimizer", {}).get("tol", 0.0)
         rank = 0
         for i, r in enumerate(results):
             m = r["metrics"]
@@ -1008,8 +1031,10 @@ class OptimizerGUI:
                 rank_text, tags = str(rank), ()
             else:
                 rank_text, tags = "—", ("invalid",)
+            flag = _bound_flag(r["mass"], bounds, tol) if bounds else ""
+            mass_text = f"{r['mass']:.2f} {flag}".strip()
             self.tree.insert("", tk.END, iid=str(i), tags=tags, values=(
-                rank_text, motor_name(r["motor_file"]), f"{r['mass']:.2f}",
+                rank_text, motor_name(r["motor_file"]), mass_text,
                 f"{m['apogee']:.1f}", f"{m['apogee_time']:.2f}",
                 f"{m['max_speed']:.1f}", f"{m['max_mach']:.2f}",
                 f"{m['max_acceleration']:.1f}",
@@ -1050,7 +1075,7 @@ class OptimizerGUI:
         if self._busy:
             return
         OpenDialog(self.root, self.saved_configs, self._recent,
-                   on_open=self._open_entry, on_delete=self._delete_saved)
+                   on_open=self._open_entry, on_delete=self._delete_entry)
 
     def _open_entry(self, kind, ref):
         """Load a picked entry: kind 'saved' (ref=name) or 'recent' (ref=path)."""
@@ -1065,10 +1090,14 @@ class OptimizerGUI:
                 return
             self._load_payload(payload, message="Loaded recent run.")
 
-    def _delete_saved(self, name):
-        if name in self.saved_configs:
-            del self.saved_configs[name]
+    def _delete_entry(self, kind, ref):
+        """Delete a saved simulation (ref=name) or a recent run (ref=path)."""
+        if kind == "saved":
+            self.saved_configs.pop(ref, None)
             store.save_saved_configs(self.saved_configs)
+        else:
+            store.delete_result(ref)
+            self._refresh_recent()
 
     def on_save(self):
         """Save the whole current simulation (inputs + outputs) under a name."""
@@ -1390,7 +1419,7 @@ class OpenDialog:
     """Pick a saved simulation or a recent run to load.
 
     Calls ``on_open(kind, ref)`` where kind is "saved" (ref = name) or "recent"
-    (ref = results file path); ``on_delete(name)`` removes a saved simulation.
+    (ref = results file path); ``on_delete(kind, ref)`` removes the entry.
     """
 
     def __init__(self, parent, saved_configs, recents, on_open, on_delete):
@@ -1426,7 +1455,7 @@ class OpenDialog:
             self.entries.append(("saved", name, True))
         for entry in recents:
             self.listbox.insert(tk.END, f"[recent]  {entry['label']}")
-            self.entries.append(("recent", entry["path"], False))
+            self.entries.append(("recent", entry["path"], True))
         if self.entries:
             self.listbox.selection_set(0)
 
@@ -1454,14 +1483,12 @@ class OpenDialog:
         idx, entry = self._selected()
         if not entry:
             return
-        kind, ref, deletable = entry
-        if not deletable:
-            messagebox.showinfo("Can't delete", "Recent runs can't be deleted here.",
-                                parent=self.win)
-            return
-        if messagebox.askyesno("Delete", f"Delete saved simulation '{ref}'?",
+        kind, ref, _ = entry
+        label = "saved simulation" if kind == "saved" else "recent run"
+        display = ref if kind == "saved" else self.listbox.get(idx)[10:]
+        if messagebox.askyesno("Delete", f"Delete {label} '{display}'?",
                                parent=self.win):
-            self.on_delete(ref)
+            self.on_delete(kind, ref)
             self.listbox.delete(idx)
             self.entries.pop(idx)
 
@@ -2055,16 +2082,9 @@ class SweepResultsView:
 
     # --- summary matrix -------------------------------------------------
     def _build_summary(self, tab):
-        ttk.Label(
-            tab, wraplength=1060, justify=tk.LEFT,
-            text=(f"{self.objective} per motor × C_d·A "
-                  "(★ = best motor for that C_d·A; ✗ = did not converge). "
-                  "Double-click a cell for that flight's plots.")).pack(
-            anchor=tk.W, padx=8, pady=(8, 4))
-
         cols = ["motor"] + [f"c{i}" for i in range(len(self.cda_values))]
         table = ttk.Frame(tab)
-        table.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        table.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
         tree = ttk.Treeview(table, columns=cols, show="headings")
         self.summary_tree = tree
         tree.heading("motor", text="Motor")
@@ -2084,6 +2104,10 @@ class SweepResultsView:
                     row.append("—")
                     continue
                 text = self._value(r)[1]
+                opt = self.sweep[i]["config"]["optimizer"]
+                flag = _bound_flag(r["mass"], opt["mass_bounds"], opt.get("tol", 0.0))
+                if flag:
+                    text = f"{text} {flag}"
                 if not r.get("converged", True):
                     text = f"({text}) ✗"
                 elif best_by_col[i] == name:
@@ -2104,12 +2128,21 @@ class SweepResultsView:
         tree.bind("<Control-c>", lambda e: _copy_tree_selection(tree, header))
 
         bar = ttk.Frame(tab)
-        bar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        bar.pack(fill=tk.X, padx=8, pady=(0, 4))
         ttk.Button(bar, text="Objective surface for selected motor",
                    command=self._open_surface).pack(side=tk.LEFT)
         ttk.Button(bar, text="Export CSV", command=lambda: _export_rows_csv(
             self.parent, header, _tree_rows(tree),
             f"{self.objective}_sweep_matrix.csv")).pack(side=tk.LEFT, padx=6)
+
+        # Legend at the bottom.
+        ttk.Label(
+            tab, foreground=COLOR_MUTED, wraplength=1000, justify=tk.LEFT,
+            text=(f"{self.objective} per motor × C_d·A.   "
+                  "★ = best motor for that C_d·A;   ✗ = did not converge;   "
+                  "▲/▼ = optimum hit the Mass max/min bound (peak not reached).   "
+                  "Double-click a cell for that flight's plots.")).pack(
+            anchor=tk.W, padx=8, pady=(0, 8))
 
     def _open_surface(self):
         """Open the (C_d·A × mass) objective surface for the selected motor."""

@@ -1292,29 +1292,32 @@ class OptimizerGUI:
     def _open_details_window(self, motor_file, mass, figures, summary, export):
         win = tk.Toplevel(self.root)
         win.title(f"{motor_name(motor_file)} @ {mass:.2f} kg")
-        win.geometry("1180x820")
+        win.geometry("1200x880")
         win.bind("<Escape>", lambda e: win.destroy())
 
-        # Scrollable page: summary across the top, then plots in a grid.
+        # Scrollable page: summary across the top, then plots in a grid. Plots
+        # keep their full size (not squeezed to fit width) — scroll sideways.
         canvas = tk.Canvas(win, highlightthickness=0)
         vsb = ttk.Scrollbar(win, orient=tk.VERTICAL, command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
+        hsb = ttk.Scrollbar(win, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         content = ttk.Frame(canvas)
-        win_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        canvas.create_window((0, 0), window=content, anchor="nw")
         content.bind("<Configure>",
                      lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
 
         def on_wheel(e):
             canvas.yview_scroll(int(-e.delta / 120), "units")
+
+        def on_shift_wheel(e):
+            canvas.xview_scroll(int(-e.delta / 120), "units")
         canvas.bind("<MouseWheel>", on_wheel)
+        canvas.bind("<Shift-MouseWheel>", on_shift_wheel)
 
         ncols = self._DETAILS_COLUMNS
-        for c in range(ncols):
-            content.columnconfigure(c, weight=1)
-
         lines = [
             f"Motor:            {motor_name(motor_file)}",
             f"Airframe mass:    {mass:.3f} kg",
@@ -1333,11 +1336,11 @@ class OptimizerGUI:
 
         for i, (name, fig) in enumerate(figures):
             cell = ttk.Frame(content)
-            cell.grid(row=1 + i // ncols, column=i % ncols, sticky="nsew",
+            cell.grid(row=1 + i // ncols, column=i % ncols, sticky="nw",
                       padx=8, pady=(0, 8))
             ttk.Label(cell, text=name, font=FONT_SUBHEAD).pack(anchor=tk.W)
-            try:  # uniform tile size so the plots form a tidy grid
-                fig.set_size_inches(5.2, 3.6)
+            try:  # larger, uniform tiles so multi-subplot figures stay readable
+                fig.set_size_inches(6.8, 5.0)
                 fig.tight_layout()
             except Exception:
                 pass
@@ -1345,7 +1348,8 @@ class OptimizerGUI:
             fig_canvas.draw()
             widget = fig_canvas.get_tk_widget()
             widget.pack(fill=tk.BOTH, expand=True)
-            widget.bind("<MouseWheel>", on_wheel)  # keep wheel scrolling over plots
+            widget.bind("<MouseWheel>", on_wheel)          # vertical scroll
+            widget.bind("<Shift-MouseWheel>", on_shift_wheel)  # sideways scroll
 
     # --- helpers --------------------------------------------------------
     def _set_busy(self, busy, message):

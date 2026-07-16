@@ -192,11 +192,9 @@ class OptimizerGUI:
         self._build_config_panel()
         self._build_motor_panel()
         self._build_results_panel()
-        self._apply_settings(self.settings)   # blank unless previously saved
+        self._restore_geometry(self.settings)  # size/position only; inputs empty
         self._load_library()
-        self._apply_chosen(self.settings.get("chosen", []))
-        self._refresh_recent()
-        self._maybe_open_latest()
+        self._refresh_recent()  # for the Open… picker; nothing is auto-shown
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -254,11 +252,9 @@ class OptimizerGUI:
                                   lambda *a, p=path: self._validate_field(p))
                 widget.grid(row=i, column=1, sticky=tk.E, pady=1, padx=(8, 0))
                 self.field_widgets[path] = (label_widget, widget)
-            # The environment group has no presets (just a lat/long/elev triple).
-            if group_key != "environment":
-                mb = self._build_preset_menu(box, group_key)  # below the inputs
-                if group_key == "rocket":
-                    self._cda_preset_mb = mb
+            mb = self._build_preset_menu(box, group_key)  # below the inputs
+            if group_key == "rocket":
+                self._cda_preset_mb = mb
 
         # Grey out objective-specific fields when their objective isn't chosen.
         self.vars[("optimizer", "objective")].trace_add(
@@ -629,24 +625,14 @@ class OptimizerGUI:
     def _path_key(path):
         return ".".join(path)
 
-    def _apply_settings(self, settings):
-        """Fill the form from saved settings; blank for anything not saved."""
+    def _restore_geometry(self, settings):
+        """Restore only the last window size/position; inputs start empty."""
         geom = settings.get("geometry")
-        if geom:  # restore the last window size/position
+        if geom:
             try:
                 self.root.geometry(geom)
             except tk.TclError:
                 pass
-        fields = settings.get("fields", {})
-        for path, var in self.vars.items():
-            var.set(fields.get(self._path_key(path), ""))
-        self.env_enabled.set(bool(settings.get("environment_enabled", False)))
-        self._update_environment_fields()
-        self.cda_mode.set(settings.get("cda_mode", "single") or "single")
-        self.cda_points.set(settings.get("cda_points", ""))
-        self.cda_min.set(settings.get("cda_min", ""))
-        self.cda_max.set(settings.get("cda_max", ""))
-        self._update_cda_fields()
 
     def _apply_config(self, config):
         """Fill the form fields from a config dict (defaults or a saved run)."""
@@ -667,16 +653,10 @@ class OptimizerGUI:
         self._update_cda_fields()
 
     def _collect_settings(self):
+        # Inputs/results are no longer remembered across sessions (app opens
+        # empty); only window geometry and the last file-browse directory.
         return {
-            "fields": {self._path_key(p): v.get() for p, v in self.vars.items()},
-            "chosen": sorted(self.chosen),
-            "environment_enabled": self.env_enabled.get(),
-            "cda_mode": self.cda_mode.get(),
-            "cda_points": self.cda_points.get(),
-            "cda_min": self.cda_min.get(),
-            "cda_max": self.cda_max.get(),
-            "geometry": self.root.winfo_geometry(),  # remember size + position
-            # Preserve last_dir (written by file dialogs) across full saves.
+            "geometry": self.root.winfo_geometry(),
             "last_dir": store.load_settings().get("last_dir", ""),
         }
 
@@ -1064,14 +1044,6 @@ class OptimizerGUI:
     # --- recent runs / saved simulations --------------------------------
     def _refresh_recent(self):
         self._recent = store.list_results()
-
-    def _maybe_open_latest(self):
-        # On startup just show the last results; keep the inputs restored from
-        # saved settings rather than overwriting them.
-        if getattr(self, "_recent", None):
-            self._open_results_payload(
-                store.load_results(self._recent[0]["path"]),
-                message="Loaded most recent run.", update_inputs=False)
 
     def on_open(self):
         """Open a saved simulation or a recent run (from a picker window)."""
@@ -2004,9 +1976,8 @@ class MotorBrowser:
 class SweepResultsView:
     """Embeddable results view for a C_d·A sweep (built into ``parent``).
 
-    A "Summary" tab shows a motor × C_d·A matrix of the objective value (the
-    best motor for each C_d·A is marked with ★), and each C_d·A value gets its
-    own ranked-table tab. Double-clicking any cell or row opens that exact
+    A motor × C_d·A matrix of the objective value (the best motor for each
+    C_d·A is marked with ★). Double-clicking a cell opens that exact
     configuration's full plots + CSV via ``on_details(config, motor_file, mass)``.
     """
 
@@ -2025,11 +1996,7 @@ class SweepResultsView:
                 self.by[(i, motor_name(r["motor_file"]))] = r
         self.motors = self._ordered_motors()
 
-        nb = ttk.Notebook(parent)
-        nb.pack(fill=tk.BOTH, expand=True)
-        self._build_summary(nb)
-        for i, entry in enumerate(sweep):
-            self._build_cda_tab(nb, i, entry)
+        self._build_summary(parent)
 
     # --- objective value helpers ----------------------------------------
     def _lower_is_better(self):
@@ -2087,9 +2054,7 @@ class SweepResultsView:
         return sorted(names, key=key, reverse=not self._lower_is_better())
 
     # --- summary matrix -------------------------------------------------
-    def _build_summary(self, nb):
-        tab = ttk.Frame(nb)
-        nb.add(tab, text="Summary")
+    def _build_summary(self, tab):
         ttk.Label(
             tab, wraplength=1060, justify=tk.LEFT,
             text=(f"{self.objective} per motor × C_d·A "
@@ -2179,54 +2144,6 @@ class SweepResultsView:
         r = self.by.get((idx, name))
         if r:
             self.on_details(self.sweep[idx]["config"], r["motor_file"], r["mass"])
-
-    # --- per-C_d·A ranked tab -------------------------------------------
-    def _build_cda_tab(self, nb, index, entry):
-        tab = ttk.Frame(nb)
-        nb.add(tab, text=f"C_d·A={entry['cda']:.4g}")
-        cols = [c[0] for c in TABLE_COLUMNS]
-        tree = ttk.Treeview(tab, columns=cols, show="headings")
-        for key, heading, width in TABLE_COLUMNS:
-            tree.heading(key, text=heading)
-            tree.column(key, width=width, anchor=tk.W if key == "motor" else tk.E)
-        tree.tag_configure("invalid", foreground=COLOR_ERROR)
-
-        order = {}
-        rank = 0
-        for row_i, r in enumerate(entry["results"]):
-            m = r["metrics"]
-            name = motor_name(r["motor_file"])
-            if r.get("converged", True):
-                rank += 1
-                rank_text, tags = str(rank), ()
-                if rank == 1:  # best configuration for this C_d·A
-                    name = f"★ {name}"
-            else:
-                rank_text, tags = "—", ("invalid",)
-            iid = str(row_i)
-            order[iid] = r
-            tree.insert("", tk.END, iid=iid, tags=tags, values=(
-                rank_text, name, f"{r['mass']:.2f}",
-                f"{m['apogee']:.1f}", f"{m['apogee_time']:.2f}",
-                f"{m['max_speed']:.1f}", f"{m['max_mach']:.2f}",
-                f"{m['max_acceleration']:.1f}"))
-
-        tree.bind("<Control-c>", lambda e: _copy_tree_selection(
-            tree, [c[1] for c in TABLE_COLUMNS]))
-        vsb = ttk.Scrollbar(tab, orient=tk.VERTICAL, command=tree.yview)
-        tree.configure(yscrollcommand=vsb.set)
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-
-        cfg = entry["config"]
-
-        def open_row(event):
-            r = order.get(tree.identify_row(event.y))
-            if r:
-                self.on_details(cfg, r["motor_file"], r["mass"])
-
-        tree.bind("<Double-1>", open_row)
-
 
 class SurfaceWindow:
     """The objective-vs-mass optimization surface for one motor.

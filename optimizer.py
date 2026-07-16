@@ -158,13 +158,19 @@ def is_converged(config, result):
     return True
 
 
-def optimize(config, motor_files=None, progress=None):
+class OptimizationCancelled(Exception):
+    """Raised by ``optimize`` when ``should_cancel`` asks it to stop early."""
+
+
+def optimize(config, motor_files=None, progress=None, should_cancel=None):
     """Optimize airframe mass for each motor; return configs ranked by score.
 
     ``config`` is the full parameter dict (built by the GUI from its inputs).
     ``motor_files`` is the list of .eng paths to sweep; if None, the whole
     library is used. ``progress`` is an optional callback(done, total, name)
     invoked after each motor, e.g. to drive a GUI progress bar.
+    ``should_cancel`` is an optional callable checked before each motor; when it
+    returns True the sweep aborts by raising ``OptimizationCancelled``.
 
     Each result carries a ``converged`` flag (see is_converged). Converged
     results are ranked first (by score); non-converged ones follow.
@@ -176,6 +182,8 @@ def optimize(config, motor_files=None, progress=None):
 
     results = []
     for i, mf in enumerate(motor_files, 1):
+        if should_cancel and should_cancel():
+            raise OptimizationCancelled()
         result = optimize_mass(config, mf)
         result["converged"] = is_converged(config, result)
         results.append(result)

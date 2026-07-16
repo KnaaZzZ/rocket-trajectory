@@ -28,7 +28,7 @@ from matplotlib.figure import Figure  # noqa: E402
 
 import store  # noqa: E402
 import surface  # noqa: E402
-from optimizer import make_scorer, optimize  # noqa: E402
+from optimizer import OptimizationCancelled, make_scorer, optimize  # noqa: E402
 from simulation import (  # noqa: E402
     LIBRARY_DIR,
     SAVED_DIR,
@@ -107,6 +107,7 @@ class OptimizerGUI:
         self.cfg = None         # config used for the currently shown results
         self.preset_menus = {}  # group key -> tk.Menu of presets
         self._busy = False
+        self._cancel = threading.Event()  # set to abort a running optimize sweep
 
         self.presets = store.load_presets()
         self.motor_presets = store.load_motor_presets()
@@ -130,8 +131,8 @@ class OptimizerGUI:
         left = ttk.Frame(self.body, padding=(12, 10))
         left.pack(side=tk.LEFT, fill=tk.Y)
 
-        # When unchecked, the environment inputs are hidden and the launch site
-        # defaults to (lat, long, elev) = (0, 0, 0).
+        # When unchecked, the environment inputs are greyed out and the launch
+        # site defaults to (lat, long, elev) = (0, 0, 0).
         self.env_enabled = tk.BooleanVar(value=False)
 
         for group_name, fields in FIELDS:
@@ -148,9 +149,7 @@ class OptimizerGUI:
                     command=self._update_environment_fields).pack(
                         side=tk.LEFT, padx=(6, 0))
                 box.configure(labelwidget=title)
-                field_parent = ttk.Frame(box)  # toggled visible/hidden together
-                field_parent.pack(fill=tk.X)
-                self.env_fields_frame = field_parent
+                field_parent = box  # inputs always visible; greyed when disabled
             elif group_key == "rocket":
                 # Single value vs a sweep of C_d·A values (see _build_cda_controls).
                 field_parent = self._build_cda_controls(box)
@@ -185,11 +184,13 @@ class OptimizerGUI:
         self._update_cda_fields()
 
     def _update_environment_fields(self):
-        """Show the environment inputs only when 'Enabled' is ticked."""
-        if self.env_enabled.get():
-            self.env_fields_frame.pack(fill=tk.X)
-        else:
-            self.env_fields_frame.pack_forget()
+        """Enable the environment inputs only when 'Enabled' is ticked; when off
+        they are greyed out and the launch site defaults to (0, 0, 0)."""
+        state = "normal" if self.env_enabled.get() else "disabled"
+        for key in ("latitude", "longitude", "elevation"):
+            label, widget = self.field_widgets[("environment", key)]
+            widget.configure(state=state)
+            label.configure(state=state)
 
     def _build_cda_controls(self, box):
         """Rocket group: a Single/Sweep C_d·A selector.
@@ -309,6 +310,9 @@ class OptimizerGUI:
         top.pack(fill=tk.X)
         self.run_btn = ttk.Button(top, text="Run Optimizer", command=self.on_run)
         self.run_btn.pack(side=tk.LEFT)
+        self.cancel_btn = ttk.Button(top, text="Cancel", command=self.on_cancel,
+                                     state=tk.DISABLED)
+        self.cancel_btn.pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(top, text="Clear inputs", command=self.on_clear).pack(
             side=tk.LEFT, padx=(6, 0))
         self.status = ttk.Label(top, text="Ready", foreground="gray")
@@ -749,9 +753,18 @@ class OptimizerGUI:
         else:
             message = (f"Sweeping {len(cda_values)} C_d·A values × "
                        f"{len(motor_files)} motor(s)...")
+        self._cancel.clear()
+        self.cancel_btn.config(state=tk.NORMAL)
         self._set_busy(True, message)
         threading.Thread(target=self._run_worker,
                          args=(cfg, cda_values, motor_files), daemon=True).start()
+
+    def on_cancel(self):
+        """Ask a running optimize sweep to stop (checked between motors)."""
+        if self._busy:
+            self._cancel.set()
+            self.cancel_btn.config(state=tk.DISABLED)
+            self.status.config(text="Cancelling…")
 
     def _run_worker(self, cfg, cda_values, motor_files):
         total = len(cda_values) * len(motor_files)
@@ -759,19 +772,30 @@ class OptimizerGUI:
         base = 0
         try:
             for cda in cda_values:
+                if self._cancel.is_set():
+                    raise OptimizationCancelled()
                 run_cfg = copy.deepcopy(cfg)
                 run_cfg["rocket"]["cda"] = cda
 
                 def progress(done, _n, name, base=base):
                     self.root.after(0, self._update_progress, base + done, total, name)
 
-                results = optimize(run_cfg, motor_files=motor_files, progress=progress)
+                results = optimize(run_cfg, motor_files=motor_files,
+                                   progress=progress,
+                                   should_cancel=self._cancel.is_set)
                 sweep.append({"cda": cda, "config": run_cfg, "results": results})
                 base += len(motor_files)
+        except OptimizationCancelled:
+            self.root.after(0, self._run_cancelled)
+            return
         except Exception as exc:
             self.root.after(0, self._run_failed, exc)
             return
         self.root.after(0, self._run_done, cfg, cda_values, sweep)
+
+    def _run_cancelled(self):
+        self.cancel_btn.config(state=tk.DISABLED)
+        self._set_busy(False, "Cancelled.")
 
     def _update_progress(self, done, total, name):
         self.progress.config(value=done)
@@ -798,6 +822,7 @@ class OptimizerGUI:
 
     def _run_done(self, cfg, cda_values, sweep):
         objective = cfg["optimizer"]["objective"]
+        self.cancel_btn.config(state=tk.DISABLED)
         store.save_settings(self._collect_settings())
         if len(cda_values) == 1:
             # Single C_d·A: the classic main-table view (also saved to history).
@@ -874,6 +899,7 @@ class OptimizerGUI:
         self._refresh_chosen()
 
     def _run_failed(self, exc):
+        self.cancel_btn.config(state=tk.DISABLED)
         self._set_busy(False, "Error.")
         messagebox.showerror("Optimization failed", str(exc))
 

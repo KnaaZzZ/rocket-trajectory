@@ -126,12 +126,28 @@ class OptimizerGUI:
         left = ttk.Frame(self.body, padding=(12, 10))
         left.pack(side=tk.LEFT, fill=tk.Y)
 
+        # When unchecked, the environment inputs are hidden and the launch site
+        # defaults to (lat, long, elev) = (0, 0, 0).
+        self.env_enabled = tk.BooleanVar(value=False)
+
         for group_name, fields in FIELDS:
             group_key = fields[0][0][0]  # section, e.g. "environment"
             box = ttk.LabelFrame(left, text=group_name, padding=6)
             box.pack(fill=tk.X, pady=3)
+
+            if group_key == "environment":
+                ttk.Checkbutton(
+                    box, text="Enabled (set a specific launch site)",
+                    variable=self.env_enabled,
+                    command=self._update_environment_fields).pack(anchor=tk.W)
+                field_parent = ttk.Frame(box)  # toggled visible/hidden together
+                field_parent.pack(fill=tk.X)
+                self.env_fields_frame = field_parent
+            else:
+                field_parent = box
+
             for path, label, kind in fields:
-                row = ttk.Frame(box)
+                row = ttk.Frame(field_parent)
                 row.pack(fill=tk.X, pady=1)
                 label_widget = ttk.Label(row, text=label, width=25)
                 label_widget.pack(side=tk.LEFT)
@@ -144,12 +160,22 @@ class OptimizerGUI:
                     widget = ttk.Entry(row, textvariable=var, width=17)
                 widget.pack(side=tk.RIGHT)
                 self.field_widgets[path] = (label_widget, widget)
-            self._build_preset_menu(box, group_key)  # compact, below the inputs
+            preset_mb = self._build_preset_menu(box, group_key)  # below the inputs
+            if group_key == "environment":
+                self._env_preset_mb = preset_mb
 
         # Grey out objective-specific fields when their objective isn't chosen.
         self.vars[("optimizer", "objective")].trace_add(
             "write", lambda *a: self._update_conditional_fields())
         self._update_conditional_fields()
+        self._update_environment_fields()
+
+    def _update_environment_fields(self):
+        """Show the environment inputs only when 'Enabled' is ticked."""
+        if self.env_enabled.get():
+            self.env_fields_frame.pack(fill=tk.X, before=self._env_preset_mb)
+        else:
+            self.env_fields_frame.pack_forget()
 
     # Fields that only apply to a specific objective.
     _CONDITIONAL_FIELDS = {
@@ -182,6 +208,7 @@ class OptimizerGUI:
             box, "Presets ▾", lambda: self._populate_preset_menu(group_key))
         mb.pack(anchor=tk.E, pady=(2, 0))
         self.preset_menus[group_key] = menu
+        return mb
 
     # --- motor panel ----------------------------------------------------
     def _build_motor_panel(self):
@@ -391,6 +418,8 @@ class OptimizerGUI:
         fields = settings.get("fields", {})
         for path, var in self.vars.items():
             var.set(fields.get(self._path_key(path), ""))
+        self.env_enabled.set(bool(settings.get("environment_enabled", False)))
+        self._update_environment_fields()
 
     def _apply_config(self, config):
         """Fill the form fields from a config dict (defaults or a saved run)."""
@@ -411,6 +440,7 @@ class OptimizerGUI:
         return {
             "fields": {self._path_key(p): v.get() for p, v in self.vars.items()},
             "chosen": sorted(self.chosen),
+            "environment_enabled": self.env_enabled.get(),
         }
 
     def _apply_chosen(self, names):
@@ -511,6 +541,12 @@ class OptimizerGUI:
             skip.add(("optimizer", "mach_limit"))
         if objective != "min_mass_for_altitude":
             skip.add(("optimizer", "target_altitude"))
+        # A disabled environment isn't edited; it defaults to (0, 0, 0) below.
+        env_enabled = self.env_enabled.get()
+        if not env_enabled:
+            skip.update([("environment", "latitude"),
+                         ("environment", "longitude"),
+                         ("environment", "elevation")])
 
         for path, var in self.vars.items():
             kind = self._kind_for(path)
@@ -556,6 +592,8 @@ class OptimizerGUI:
             cfg[section][key] = value
         cfg["optimizer"]["mass_bounds"] = (
             values[("optimizer", "mass_min")], values[("optimizer", "mass_max")])
+        if not env_enabled:
+            cfg["environment"] = {"latitude": 0.0, "longitude": 0.0, "elevation": 0.0}
         return cfg
 
     # --- run optimizer --------------------------------------------------

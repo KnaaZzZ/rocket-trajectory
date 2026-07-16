@@ -52,6 +52,21 @@ OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 
 APP_TITLE = "Rocket Trajectory Optimizer by Yaroslav Knyazkov"
 
+# One font family (the Tk default), a few sizes, plus a monospace for aligned
+# numeric read-outs. Defined once and reused everywhere (visual-appearance skill).
+FONT_HEADING = ("", 11, "bold")
+FONT_SUBHEAD = ("", 10, "bold")
+FONT_SMALL = ("", 8)
+FONT_MONO = ("Consolas", 11)
+
+# Limited, named palette (visual-appearance skill): accent for links, red for
+# errors/destructive, green for good/best status, grey for idle status text.
+COLOR_ACCENT = "#3b6ea5"
+COLOR_ACCENT_ACTIVE = "#1f4e79"
+COLOR_ERROR = "#c00000"
+COLOR_GOOD = "#3aa76d"
+COLOR_MUTED = "gray"
+
 OBJECTIVES = [
     "apogee", "apogee_time", "max_speed", "max_mach", "max_acceleration",
     "apogee_capped_mach", "min_mass_for_altitude",
@@ -98,6 +113,18 @@ TABLE_COLUMNS = [
 ]
 
 
+def _last_dir():
+    """The last directory a file was browsed from, or None (for initialdir)."""
+    return store.load_settings().get("last_dir") or None
+
+
+def _remember_dir(path):
+    """Persist the folder of ``path`` so the next file browse starts there."""
+    settings = store.load_settings()
+    settings["last_dir"] = os.path.dirname(os.path.abspath(path))
+    store.save_settings(settings)
+
+
 class OptimizerGUI:
     def __init__(self, root):
         self.root = root
@@ -114,6 +141,7 @@ class OptimizerGUI:
         self.preset_menus = {}  # group key -> tk.Menu of presets
         self._busy = False
         self._cancel = threading.Event()  # set to abort a running optimize sweep
+        self._clear_snapshot = None  # last-cleared inputs, for one-click undo
 
         self.presets = store.load_presets()
         self.motor_presets = store.load_motor_presets()
@@ -131,6 +159,12 @@ class OptimizerGUI:
         self._maybe_open_latest()
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # Keyboard-first: Enter runs, Escape cancels a running optimize.
+        root.bind("<Return>", lambda e: self.on_run())
+        root.bind("<Escape>", lambda e: self.on_cancel())
+        # Focus the primary decision (the objective) so typing starts there.
+        self.field_widgets[("optimizer", "objective")][1].focus_set()
 
     # --- config panel ---------------------------------------------------
     def _build_config_panel(self):
@@ -257,8 +291,8 @@ class OptimizerGUI:
     def _link_menu(parent, text, postcommand):
         """A small blue text link that drops a menu (compact preset control)."""
         mb = tk.Menubutton(parent, text=text, relief=tk.FLAT, borderwidth=0,
-                           fg="#3b6ea5", activeforeground="#1f4e79",
-                           cursor="hand2", font=("", 8), padx=0, pady=0)
+                           fg=COLOR_ACCENT, activeforeground=COLOR_ACCENT_ACTIVE,
+                           cursor="hand2", font=FONT_SMALL, padx=0, pady=0)
         menu = tk.Menu(mb, tearoff=0)
         mb["menu"] = menu
         menu.configure(postcommand=postcommand)
@@ -277,7 +311,7 @@ class OptimizerGUI:
         mid = ttk.Frame(self.body, padding=(12, 10))
         mid.pack(side=tk.LEFT, fill=tk.Y)
 
-        ttk.Label(mid, text="Motors", font=("", 10, "bold")).pack(anchor=tk.W)
+        ttk.Label(mid, text="Motors", font=FONT_SUBHEAD).pack(anchor=tk.W)
         ttk.Button(mid, text="Choose motors…  (browse library)",
                    command=self._open_motor_browser).pack(fill=tk.X, pady=(2, 4))
 
@@ -321,7 +355,10 @@ class OptimizerGUI:
         self.cancel_btn.pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(top, text="Clear inputs", command=self.on_clear).pack(
             side=tk.LEFT, padx=(6, 0))
-        self.status = ttk.Label(top, text="Ready", foreground="gray")
+        self.undo_btn = ttk.Button(top, text="Undo clear",
+                                   command=self.on_undo_clear, state=tk.DISABLED)
+        self.undo_btn.pack(side=tk.LEFT, padx=(6, 0))
+        self.status = ttk.Label(top, text="Ready", foreground=COLOR_MUTED)
         self.status.pack(side=tk.LEFT, padx=8)
         self.progress = ttk.Progressbar(right, mode="determinate")
         self.progress.pack(fill=tk.X, pady=4)
@@ -336,7 +373,7 @@ class OptimizerGUI:
         ttk.Button(recent, text="Open", command=self.on_open_recent).pack(side=tk.LEFT)
 
         ttk.Label(right, text="Configurations (ranked by objective)",
-                  font=("", 11, "bold")).pack(anchor=tk.W)
+                  font=FONT_HEADING).pack(anchor=tk.W)
         table = ttk.Frame(right)
         table.pack(fill=tk.BOTH, expand=True, pady=6)
         cols = [c[0] for c in TABLE_COLUMNS]
@@ -484,6 +521,12 @@ class OptimizerGUI:
 
     def _apply_settings(self, settings):
         """Fill the form from saved settings; blank for anything not saved."""
+        geom = settings.get("geometry")
+        if geom:  # restore the last window size/position
+            try:
+                self.root.geometry(geom)
+            except tk.TclError:
+                pass
         fields = settings.get("fields", {})
         for path, var in self.vars.items():
             var.set(fields.get(self._path_key(path), ""))
@@ -522,6 +565,9 @@ class OptimizerGUI:
             "cda_points": self.cda_points.get(),
             "cda_min": self.cda_min.get(),
             "cda_max": self.cda_max.get(),
+            "geometry": self.root.winfo_geometry(),  # remember size + position
+            # Preserve last_dir (written by file dialogs) across full saves.
+            "last_dir": store.load_settings().get("last_dir", ""),
         }
 
     def _apply_chosen(self, names):
@@ -531,10 +577,31 @@ class OptimizerGUI:
         self._refresh_chosen()
 
     def on_clear(self):
+        # Snapshot first so an accidental clear is one click to undo.
+        self._clear_snapshot = {
+            "vars": {p: v.get() for p, v in self.vars.items()},
+            "cda": (self.cda_points.get(), self.cda_min.get(), self.cda_max.get()),
+        }
         for var in self.vars.values():
             var.set("")
         for var in (self.cda_points, self.cda_min, self.cda_max):
             var.set("")
+        self.undo_btn.config(state=tk.NORMAL)
+        self.status.config(text="Inputs cleared — Undo clear to restore.")
+
+    def on_undo_clear(self):
+        snap = self._clear_snapshot
+        if not snap:
+            return
+        for path, value in snap["vars"].items():
+            if path in self.vars:
+                self.vars[path].set(value)
+        self.cda_points.set(snap["cda"][0])
+        self.cda_min.set(snap["cda"][1])
+        self.cda_max.set(snap["cda"][2])
+        self._clear_snapshot = None
+        self.undo_btn.config(state=tk.DISABLED)
+        self.status.config(text="Inputs restored.")
 
     # --- presets (per input group) --------------------------------------
     def _group_paths(self, group_key):
@@ -815,7 +882,7 @@ class OptimizerGUI:
 
     def _populate_table(self, results):
         self.tree.delete(*self.tree.get_children())
-        self.tree.tag_configure("invalid", foreground="#c00000")
+        self.tree.tag_configure("invalid", foreground=COLOR_ERROR)
         rank = 0
         for i, r in enumerate(results):
             m = r["metrics"]
@@ -1008,6 +1075,7 @@ class OptimizerGUI:
         win = tk.Toplevel(self.root)
         win.title(f"{motor_name(motor_file)} @ {mass:.2f} kg")
         win.geometry("1000x760")
+        win.bind("<Escape>", lambda e: win.destroy())
 
         # One scrollable page holding the summary and every plot stacked.
         canvas = tk.Canvas(win, highlightthickness=0)
@@ -1038,11 +1106,10 @@ class OptimizerGUI:
             f"Time series exported to: {export}",
         ]
         tk.Label(content, text="\n".join(lines), justify=tk.LEFT,
-                 font=("Courier New", 11), anchor="nw").pack(anchor=tk.NW, padx=12,
-                                                             pady=8)
+                 font=FONT_MONO, anchor="nw").pack(anchor=tk.NW, padx=12, pady=8)
 
         for name, fig in figures:
-            ttk.Label(content, text=name, font=("", 10, "bold")).pack(
+            ttk.Label(content, text=name, font=FONT_SUBHEAD).pack(
                 anchor=tk.W, padx=12, pady=(10, 0))
             fig_canvas = FigureCanvasTkAgg(fig, master=content)
             fig_canvas.draw()
@@ -1130,8 +1197,8 @@ class AddMotorDialog:
         name_row.pack(fill=tk.X)
         ttk.Label(name_row, text="Name:").pack(side=tk.LEFT)
         self.name_var = tk.StringVar()
-        ttk.Entry(name_row, textvariable=self.name_var).pack(
-            side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        self.name_entry = ttk.Entry(name_row, textvariable=self.name_var)
+        self.name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
         ttk.Button(name_row, text="Browse .eng file…",
                    command=self._browse).pack(side=tk.LEFT)
 
@@ -1148,12 +1215,19 @@ class AddMotorDialog:
         ttk.Button(btns, text="Cancel", command=self.win.destroy).pack(
             side=tk.RIGHT, padx=4)
 
+        # Keyboard: Enter in the name box adds; Escape cancels. Focus the name.
+        self.name_entry.bind("<Return>", lambda e: self._submit())
+        self.win.bind("<Escape>", lambda e: self.win.destroy())
+        self.name_entry.focus_set()
+
     def _browse(self):
         path = filedialog.askopenfilename(
             title="Select a .eng motor file",
+            initialdir=_last_dir(),
             filetypes=[("RASP engine files", "*.eng"), ("All files", "*.*")])
         if not path:
             return
+        _remember_dir(path)
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             self.text.delete("1.0", tk.END)
             self.text.insert("1.0", f.read())
@@ -1259,7 +1333,7 @@ class DualRangeSlider(ttk.Frame):
         y = self.HEIGHT // 2
         xlo, xhi = self._x_of(self.low), self._x_of(self.high)
         c.create_line(self.PAD, y, self._pxw - self.PAD, y, fill="#aaa", width=3)
-        c.create_line(xlo, y, xhi, y, fill="#3aa76d", width=3)
+        c.create_line(xlo, y, xhi, y, fill=COLOR_GOOD, width=3)
         r = self.RADIUS
         c.create_oval(xlo - r, y - r, xlo + r, y + r, fill="white",
                       outline="#444", width=2, tags="min")
@@ -1361,6 +1435,10 @@ class MotorBrowser:
         self._build_tables()
         self._refresh()
 
+        # Escape closes; focus the search box so filtering starts immediately.
+        self.win.bind("<Escape>", lambda e: self.win.destroy())
+        self.search_entry.focus_set()
+
     # --- widgets --------------------------------------------------------
     def _build_filters(self):
         # Scrollable side panel so the filters never get cramped.
@@ -1379,12 +1457,13 @@ class MotorBrowser:
         canvas.bind("<MouseWheel>",
                     lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
 
-        ttk.Label(side, text="Filters", font=("", 11, "bold")).pack(anchor=tk.W)
+        ttk.Label(side, text="Filters", font=FONT_HEADING).pack(anchor=tk.W)
 
         # Search --------------------------------------------------------
         ttk.Label(side, text="Search").pack(anchor=tk.W, pady=(10, 0))
         self.search_var = tk.StringVar()
-        ttk.Entry(side, textvariable=self.search_var).pack(fill=tk.X)
+        self.search_entry = ttk.Entry(side, textvariable=self.search_var)
+        self.search_entry.pack(fill=tk.X)
         self.search_var.trace_add("write", lambda *a: self._refresh())
 
         # Manufacturers: multi-checkbox --------------------------------
@@ -1687,6 +1766,7 @@ class SweepResultsWindow:
         self.win = tk.Toplevel(parent)
         self.win.title(f"C_d·A sweep — {self.objective}")
         self.win.geometry("1120x720")
+        self.win.bind("<Escape>", lambda e: self.win.destroy())
         nb = ttk.Notebook(self.win)
         nb.pack(fill=tk.BOTH, expand=True)
         self._build_summary(nb)
@@ -1757,7 +1837,7 @@ class SweepResultsWindow:
         for i, cda in enumerate(self.cda_values):
             tree.heading(f"c{i}", text=f"{cda:.4g}")
             tree.column(f"c{i}", width=110, anchor=tk.E)
-        tree.tag_configure("invalid", foreground="#c00000")
+        tree.tag_configure("invalid", foreground=COLOR_ERROR)
 
         for name in self.motors:
             best_i = self._best_index(name)
@@ -1833,7 +1913,7 @@ class SweepResultsWindow:
         for key, heading, width in TABLE_COLUMNS:
             tree.heading(key, text=heading)
             tree.column(key, width=width, anchor=tk.W if key == "motor" else tk.E)
-        tree.tag_configure("invalid", foreground="#c00000")
+        tree.tag_configure("invalid", foreground=COLOR_ERROR)
 
         order = {}
         rank = 0
@@ -1886,6 +1966,7 @@ class SurfaceWindow:
         self.win = tk.Toplevel(parent)
         self.win.title(f"Optimization surface — {motor} ({objective})")
         self.win.geometry("900x680")
+        self.win.bind("<Escape>", lambda e: self.win.destroy())
 
         if data[0] == "curve":
             _, masses, scores = data
@@ -1959,8 +2040,21 @@ class SurfaceWindow:
         return fig
 
 
+def _set_theme(root):
+    """Set one ttk theme explicitly so the look is deliberate and consistent.
+
+    Prefer the native Windows theme; fall back to the cross-platform 'clam'.
+    """
+    style = ttk.Style(root)
+    for theme in ("vista", "clam"):
+        if theme in style.theme_names():
+            style.theme_use(theme)
+            break
+
+
 def main():
     root = tk.Tk()
+    _set_theme(root)
     OptimizerGUI(root)
     root.mainloop()
 

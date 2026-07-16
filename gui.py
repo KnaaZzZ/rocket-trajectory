@@ -1827,15 +1827,18 @@ class SweepResultsWindow:
         rank = 0
         for row_i, r in enumerate(entry["results"]):
             m = r["metrics"]
+            name = motor_name(r["motor_file"])
             if r.get("converged", True):
                 rank += 1
                 rank_text, tags = str(rank), ()
+                if rank == 1:  # best configuration for this C_d·A
+                    name = f"★ {name}"
             else:
                 rank_text, tags = "—", ("invalid",)
             iid = str(row_i)
             order[iid] = r
             tree.insert("", tk.END, iid=iid, tags=tags, values=(
-                rank_text, motor_name(r["motor_file"]), f"{r['mass']:.2f}",
+                rank_text, name, f"{r['mass']:.2f}",
                 f"{m['apogee']:.1f}", f"{m['apogee_time']:.2f}",
                 f"{m['max_speed']:.1f}", f"{m['max_mach']:.2f}",
                 f"{m['max_acceleration']:.1f}"))

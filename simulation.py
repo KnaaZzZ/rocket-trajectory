@@ -290,6 +290,12 @@ def run(config, motor_file=None, mass=None):
         # heading (launch azimuth) is omitted: the ISA standard atmosphere has
         # zero wind, so it has no effect on a point-mass trajectory.
         simulation_mode="3 DOF",  # required for point-mass models
+        # Stop at apogee: every objective here is about the ascent, and the
+        # unpowered ballistic descent (no parachute) can send the integrator
+        # unstable for high-drag / low-mass cases -- producing absurd
+        # max_speed / max_acceleration spikes. Terminating at apogee gives
+        # clean ascent metrics and runs faster.
+        terminate_on_apogee=True,
     )
     return env, flight
 

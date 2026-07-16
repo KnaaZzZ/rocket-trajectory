@@ -145,7 +145,7 @@ class OptimizerGUI:
                 title = ttk.Frame(box)
                 ttk.Label(title, text=group_name).pack(side=tk.LEFT)
                 ttk.Checkbutton(
-                    title, text="enabled", variable=self.env_enabled,
+                    title, variable=self.env_enabled,
                     command=self._update_environment_fields).pack(
                         side=tk.LEFT, padx=(6, 0))
                 box.configure(labelwidget=title)

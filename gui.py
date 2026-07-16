@@ -161,6 +161,10 @@ class OptimizerGUI:
         root.minsize(1000, 640)
         root.geometry("1360x800")
 
+        # Style for a field that currently holds an invalid value (live check).
+        ttk.Style().configure("Invalid.TEntry", foreground=COLOR_ERROR,
+                              fieldbackground="#ffecec")
+
         self.vars = {}          # config path -> tk StringVar
         self.field_widgets = {}  # config path -> (label, entry/combo) widgets
         self.results = []       # last optimize() results, index-aligned to rows
@@ -230,19 +234,23 @@ class OptimizerGUI:
             else:
                 field_parent = box
 
-            for path, label, kind in fields:
-                row = ttk.Frame(field_parent)
-                row.pack(fill=tk.X, pady=1)
-                label_widget = ttk.Label(row, text=label, width=25)
-                label_widget.pack(side=tk.LEFT)
+            # Grid so labels and inputs line up in columns (visual-appearance).
+            grid = ttk.Frame(field_parent)
+            grid.pack(fill=tk.X)
+            grid.columnconfigure(1, weight=1)
+            for i, (path, label, kind) in enumerate(fields):
+                label_widget = ttk.Label(grid, text=label)
+                label_widget.grid(row=i, column=0, sticky=tk.W, pady=1)
                 var = tk.StringVar()
                 self.vars[path] = var
                 if kind == "combo":
-                    widget = ttk.Combobox(row, textvariable=var, values=OBJECTIVES,
+                    widget = ttk.Combobox(grid, textvariable=var, values=OBJECTIVES,
                                           state="readonly", width=15)
                 else:
-                    widget = ttk.Entry(row, textvariable=var, width=17)
-                widget.pack(side=tk.RIGHT)
+                    widget = ttk.Entry(grid, textvariable=var, width=17)
+                    var.trace_add("write",
+                                  lambda *a, p=path: self._validate_field(p))
+                widget.grid(row=i, column=1, sticky=tk.E, pady=1, padx=(8, 0))
                 self.field_widgets[path] = (label_widget, widget)
             # The environment group has no presets (just a lat/long/elev triple).
             if group_key != "environment":
@@ -256,6 +264,30 @@ class OptimizerGUI:
         self._update_conditional_fields()
         self._update_environment_fields()
         self._update_cda_fields()
+
+    def _validate_field(self, path):
+        """Live check: tint an entry red while it holds an invalid value.
+
+        Emptiness is left alone (that's a submit-time 'required' concern), as is
+        a disabled field. Otherwise the value must parse and pass its rule.
+        """
+        label, widget = self.field_widgets[path]
+        if not isinstance(widget, ttk.Entry):
+            return
+        if str(widget.cget("state")) == "disabled":
+            widget.configure(style="TEntry")
+            return
+        raw = self.vars[path].get().strip()
+        if raw == "":
+            widget.configure(style="TEntry")
+            return
+        try:
+            value = int(float(raw)) if self._kind_for(path) == "int" else float(raw)
+            rule = self._RULES.get(path)
+            ok = not (rule and not rule[1](value))
+        except ValueError:
+            ok = False
+        widget.configure(style="TEntry" if ok else "Invalid.TEntry")
 
     def _update_statusbar(self):
         """Refresh the always-visible objective / mode / motor-count line."""
@@ -272,9 +304,11 @@ class OptimizerGUI:
         they are greyed out and the launch site defaults to (0, 0, 0)."""
         state = "normal" if self.env_enabled.get() else "disabled"
         for key in ("latitude", "longitude", "elevation"):
-            label, widget = self.field_widgets[("environment", key)]
+            path = ("environment", key)
+            label, widget = self.field_widgets[path]
             widget.configure(state=state)
             label.configure(state=state)
+            self._validate_field(path)  # clear/apply red as it enables/disables
 
     def _build_cda_controls(self, box):
         """Rocket group: a Single/Sweep C_d·A selector.
@@ -300,13 +334,15 @@ class OptimizerGUI:
         self.cda_points = tk.StringVar()
         self.cda_min = tk.StringVar()
         self.cda_max = tk.StringVar()
-        for label, var in (("Sweep points", self.cda_points),
-                           ("Min C_d·A (m^2)", self.cda_min),
-                           ("Max C_d·A (m^2)", self.cda_max)):
-            row = ttk.Frame(self.cda_sweep_frame)
-            row.pack(fill=tk.X, pady=1)
-            ttk.Label(row, text=label, width=25).pack(side=tk.LEFT)
-            ttk.Entry(row, textvariable=var, width=17).pack(side=tk.RIGHT)
+        grid = ttk.Frame(self.cda_sweep_frame)
+        grid.pack(fill=tk.X)
+        grid.columnconfigure(1, weight=1)
+        for i, (label, var) in enumerate((("Sweep points", self.cda_points),
+                                          ("Min C_d·A (m^2)", self.cda_min),
+                                          ("Max C_d·A (m^2)", self.cda_max))):
+            ttk.Label(grid, text=label).grid(row=i, column=0, sticky=tk.W, pady=1)
+            ttk.Entry(grid, textvariable=var, width=17).grid(
+                row=i, column=1, sticky=tk.E, pady=1, padx=(8, 0))
         return self.cda_single_frame
 
     def _update_cda_fields(self):
@@ -331,6 +367,7 @@ class OptimizerGUI:
             active = objective == needed_by
             widget.configure(state="normal" if active else "disabled")
             label.configure(state="normal" if active else "disabled")
+            self._validate_field(path)
         self._update_statusbar()
 
     @staticmethod

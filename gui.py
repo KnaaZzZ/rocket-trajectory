@@ -175,6 +175,8 @@ class OptimizerGUI:
         self._busy = False
         self._cancel = threading.Event()  # set to abort a running optimize sweep
         self._clear_snapshot = None  # last-cleared inputs, for one-click undo
+        self._mode = "single"        # "single" or "sweep" — what's shown/saved
+        self._last_sweep = None      # (cda_values, sweep) of the last sweep run
 
         self.presets = store.load_presets()
         self.motor_presets = store.load_motor_presets()
@@ -264,6 +266,15 @@ class OptimizerGUI:
         self._update_conditional_fields()
         self._update_environment_fields()
         self._update_cda_fields()
+
+        # Clear / Undo live with the inputs they act on (not the results side).
+        clearbar = ttk.Frame(left)
+        clearbar.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(clearbar, text="Clear inputs",
+                   command=self.on_clear).pack(side=tk.LEFT)
+        self.undo_btn = ttk.Button(clearbar, text="Undo clear",
+                                   command=self.on_undo_clear, state=tk.DISABLED)
+        self.undo_btn.pack(side=tk.LEFT, padx=(6, 0))
 
     def _validate_field(self, path):
         """Live check: tint an entry red while it holds an invalid value.
@@ -436,24 +447,16 @@ class OptimizerGUI:
         self.cancel_btn = ttk.Button(top, text="Cancel", command=self.on_cancel,
                                      state=tk.DISABLED)
         self.cancel_btn.pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(top, text="Clear inputs", command=self.on_clear).pack(
-            side=tk.LEFT, padx=(6, 0))
-        self.undo_btn = ttk.Button(top, text="Undo clear",
-                                   command=self.on_undo_clear, state=tk.DISABLED)
-        self.undo_btn.pack(side=tk.LEFT, padx=(6, 0))
+        # Save / Open / Export sit on the right (packed reversed to read L→R).
+        ttk.Button(top, text="Export CSV",
+                   command=self.on_export_results).pack(side=tk.RIGHT)
+        ttk.Button(top, text="Open…", command=self.on_open).pack(
+            side=tk.RIGHT, padx=6)
+        ttk.Button(top, text="Save…", command=self.on_save).pack(side=tk.RIGHT)
         self.status = ttk.Label(top, text="Ready", foreground=COLOR_MUTED)
         self.status.pack(side=tk.LEFT, padx=8)
         self.progress = ttk.Progressbar(right, mode="determinate")
         self.progress.pack(fill=tk.X, pady=4)
-
-        recent = ttk.Frame(right)
-        recent.pack(fill=tk.X)
-        ttk.Label(recent, text="Recent runs:").pack(side=tk.LEFT)
-        self.recent_var = tk.StringVar()
-        self.recent_combo = ttk.Combobox(recent, textvariable=self.recent_var,
-                                         state="readonly")
-        self.recent_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
-        ttk.Button(recent, text="Open", command=self.on_open_recent).pack(side=tk.LEFT)
 
         # Results area swaps between the single-C_d·A table and the sweep view.
         self.results_area = ttk.Frame(right)
@@ -494,21 +497,6 @@ class OptimizerGUI:
             actions, text="Objective vs mass", command=self.on_show_surface,
             state=tk.DISABLED)
         self.surface_btn.pack(side=tk.LEFT, padx=6)
-        ttk.Button(actions, text="Save configuration",
-                   command=self.on_save_config).pack(side=tk.LEFT, padx=6)
-        ttk.Button(actions, text="Export CSV",
-                   command=self.on_export_results).pack(side=tk.LEFT)
-
-        saved = ttk.Frame(single)
-        saved.pack(fill=tk.X, pady=(4, 0))
-        ttk.Label(saved, text="Saved configs:").pack(side=tk.LEFT)
-        self.saved_combo = ttk.Combobox(saved, state="readonly")
-        self.saved_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
-        ttk.Button(saved, text="Open", command=self.on_open_saved_config).pack(
-            side=tk.LEFT)
-        ttk.Button(saved, text="Del", command=self.on_delete_saved_config).pack(
-            side=tk.LEFT)
-        self._refresh_saved_combo()
 
     def _show_single_results(self):
         """Show the ranked-table view (single C_d·A); drop any sweep view."""
@@ -756,6 +744,13 @@ class OptimizerGUI:
                     label=name, command=lambda n=name: self._delete_preset(group_key, n))
             menu.add_cascade(label="Delete", menu=submenu)
 
+    def _extra_preset_vars(self, group_key):
+        """Non-``self.vars`` fields a preset should also capture (rocket sweep)."""
+        if group_key == "rocket":
+            return {"cda_mode": self.cda_mode, "cda_points": self.cda_points,
+                    "cda_min": self.cda_min, "cda_max": self.cda_max}
+        return {}
+
     def _save_preset(self, group_key):
         name = simpledialog.askstring(
             "Save preset", f"Name for this {group_key} preset:", parent=self.root)
@@ -765,8 +760,11 @@ class OptimizerGUI:
         group = self.presets.setdefault(group_key, {})
         if not self._confirm_overwrite(name, group, f"{group_key} preset"):
             return
-        group[name] = {self._path_key(p): self.vars[p].get()
-                       for p in self._group_paths(group_key)}
+        values = {self._path_key(p): self.vars[p].get()
+                  for p in self._group_paths(group_key)}
+        for key, var in self._extra_preset_vars(group_key).items():
+            values[key] = var.get()
+        group[name] = values
         store.save_presets(self.presets)
 
     def _load_preset(self, group_key, name):
@@ -776,6 +774,11 @@ class OptimizerGUI:
         for p in self._group_paths(group_key):
             if self._path_key(p) in preset:
                 self.vars[p].set(preset[self._path_key(p)])
+        for key, var in self._extra_preset_vars(group_key).items():
+            if key in preset:
+                var.set(preset[key])
+        if group_key == "rocket":
+            self._update_cda_fields()  # reflect single/sweep mode from the preset
 
     def _delete_preset(self, group_key, name):
         if name in self.presets.get(group_key, {}) and messagebox.askyesno(
@@ -1041,6 +1044,8 @@ class OptimizerGUI:
             entry = sweep[0]
             self.cfg = entry["config"]
             self.results = entry["results"]
+            self._mode = "single"
+            self._last_sweep = None
             self._show_single_results()
             self._populate_table(self.results)
             store.save_results(self.cfg, self.results, objective)
@@ -1050,16 +1055,15 @@ class OptimizerGUI:
         else:
             # Sweep: the matrix + per-C_d·A tabs, embedded in the main window.
             motor_count = len(sweep[0]["results"]) if sweep else 0
+            self._mode = "sweep"
+            self._last_sweep = (cda_values, sweep)
             self._show_sweep_results(cda_values, sweep)
             self._set_busy(False, f"Done. Swept {len(cda_values)} C_d·A values × "
                                   f"{motor_count} motor(s), by {objective}.")
 
-    # --- recent runs ----------------------------------------------------
+    # --- recent runs / saved simulations --------------------------------
     def _refresh_recent(self):
         self._recent = store.list_results()
-        self.recent_combo["values"] = [e["label"] for e in self._recent]
-        if self._recent:
-            self.recent_combo.current(0)
 
     def _maybe_open_latest(self):
         # On startup just show the last results; keep the inputs restored from
@@ -1069,28 +1073,103 @@ class OptimizerGUI:
                 store.load_results(self._recent[0]["path"]),
                 message="Loaded most recent run.", update_inputs=False)
 
-    def on_open_recent(self):
-        idx = self.recent_combo.current()
-        if idx < 0 or idx >= len(getattr(self, "_recent", [])):
+    def on_open(self):
+        """Open a saved simulation or a recent run (from a picker window)."""
+        if self._busy:
             return
-        try:
-            payload = store.load_results(self._recent[idx]["path"])
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("Could not open run", str(exc))
-            return
-        # Explicitly opening a past run also restores its inputs so it can be
-        # tweaked and re-run.
-        self._open_results_payload(payload, message="Loaded saved run.",
-                                   update_inputs=True)
+        OpenDialog(self.root, self.saved_configs, self._recent,
+                   on_open=self._open_entry, on_delete=self._delete_saved)
 
-    def _open_results_payload(self, payload, message="Loaded.", update_inputs=False):
-        cfg = payload.get("config", {})
+    def _open_entry(self, kind, ref):
+        """Load a picked entry: kind 'saved' (ref=name) or 'recent' (ref=path)."""
+        if kind == "saved":
+            self._load_payload(self.saved_configs.get(ref, {}),
+                               message=f"Loaded saved simulation '{ref}'.")
+        else:
+            try:
+                payload = store.load_results(ref)
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Could not open run", str(exc))
+                return
+            self._load_payload(payload, message="Loaded recent run.")
+
+    def _delete_saved(self, name):
+        if name in self.saved_configs:
+            del self.saved_configs[name]
+            store.save_saved_configs(self.saved_configs)
+
+    def on_save(self):
+        """Save the whole current simulation (inputs + outputs) under a name."""
+        payload = self._current_payload()
+        if payload is None:
+            messagebox.showinfo("Nothing to save", "Run the optimizer first.")
+            return
+        name = simpledialog.askstring(
+            "Save simulation", "Name for this saved simulation:", parent=self.root)
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        if not self._confirm_overwrite(name, self.saved_configs, "saved simulation"):
+            return
+        self.saved_configs[name] = payload
+        store.save_saved_configs(self.saved_configs)
+        self.status.config(text=f"Saved '{name}'.")
+
+    def _current_payload(self):
+        """A serializable snapshot of the current run (single or sweep)."""
+        if self._mode == "sweep" and self._last_sweep:
+            cda_values, sweep = self._last_sweep
+            return {
+                "kind": "sweep",
+                "objective": sweep[0]["config"]["optimizer"]["objective"],
+                "cda_values": list(cda_values),
+                "sweep": [{"cda": e["cda"], "config": e["config"],
+                           "results": store.serializable_results(e["results"])}
+                          for e in sweep],
+            }
+        if self.results and self.cfg:
+            return {
+                "kind": "single",
+                "objective": self.cfg["optimizer"]["objective"],
+                "config": self.cfg,
+                "results": store.serializable_results(self.results),
+            }
+        return None
+
+    @staticmethod
+    def _mass_bounds_tuple(cfg):
         try:  # JSON turned the mass-bounds tuple into a list
             cfg["optimizer"]["mass_bounds"] = tuple(cfg["optimizer"]["mass_bounds"])
         except (KeyError, TypeError):
             pass
+        return cfg
+
+    def _load_payload(self, payload, message="Loaded."):
+        """Restore a saved/recent simulation (single or sweep) into the window."""
+        if payload.get("kind") == "sweep":
+            cda_values = payload["cda_values"]
+            sweep = [{"cda": e["cda"], "config": self._mass_bounds_tuple(e["config"]),
+                      "results": e["results"]} for e in payload["sweep"]]
+            base = sweep[0]["config"]
+            self._apply_config(base)
+            self.cda_mode.set("sweep")
+            self.cda_points.set(str(len(cda_values)))
+            self.cda_min.set(str(cda_values[0]))
+            self.cda_max.set(str(cda_values[-1]))
+            self._update_cda_fields()
+            self._set_chosen_from_results(sweep[0]["results"])
+            self._mode = "sweep"
+            self._last_sweep = (cda_values, sweep)
+            self._show_sweep_results(cda_values, sweep)
+            self.status.config(text=message)
+        else:
+            self._open_results_payload(payload, message=message, update_inputs=True)
+
+    def _open_results_payload(self, payload, message="Loaded.", update_inputs=False):
+        cfg = self._mass_bounds_tuple(payload.get("config", {}))
         self.cfg = cfg
         self.results = payload.get("results", [])
+        self._mode = "single"
         self._show_single_results()  # saved/recent runs are single-C_d·A
         self._populate_table(self.results)
         if update_inputs:
@@ -1251,61 +1330,6 @@ class OptimizerGUI:
             widget.pack(fill=tk.X, padx=12, pady=(0, 6))
             widget.bind("<MouseWheel>", on_wheel)  # keep wheel scrolling over plots
 
-    # --- saved configurations -------------------------------------------
-    def on_save_config(self):
-        if not self.results:
-            return
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showinfo("No selection", "Select a configuration to save.")
-            return
-        result = self.results[int(sel[0])]
-        name = simpledialog.askstring(
-            "Save configuration", "Name for this configuration:", parent=self.root)
-        if not name or not name.strip():
-            return
-        name = name.strip()
-        if not self._confirm_overwrite(name, self.saved_configs, "configuration"):
-            return
-        self.saved_configs[name] = {
-            "motor_name": motor_name(result["motor_file"]),
-            "motor_file": result["motor_file"],
-            "mass": result["mass"],
-            "metrics": result["metrics"],
-            "config": self.cfg,
-        }
-        store.save_saved_configs(self.saved_configs)
-        self._refresh_saved_combo()
-        self.saved_combo.set(name)
-
-    def _refresh_saved_combo(self):
-        names = sorted(self.saved_configs)
-        self.saved_combo["values"] = names
-        if self.saved_combo.get() not in names:
-            self.saved_combo.set("")
-
-    def on_open_saved_config(self):
-        if self._busy:
-            return
-        rec = self.saved_configs.get(self.saved_combo.get())
-        if not rec:
-            messagebox.showinfo("No configuration", "Pick a saved configuration.")
-            return
-        cfg = rec["config"]
-        try:
-            cfg["optimizer"]["mass_bounds"] = tuple(cfg["optimizer"]["mass_bounds"])
-        except (KeyError, TypeError):
-            pass
-        self._start_details(cfg, rec["motor_file"], rec["mass"])
-
-    def on_delete_saved_config(self):
-        name = self.saved_combo.get()
-        if name in self.saved_configs and messagebox.askyesno(
-                "Delete configuration", f"Delete saved configuration '{name}'?"):
-            del self.saved_configs[name]
-            store.save_saved_configs(self.saved_configs)
-            self._refresh_saved_combo()
-
     # --- helpers --------------------------------------------------------
     def _set_busy(self, busy, message):
         self._busy = busy
@@ -1314,6 +1338,9 @@ class OptimizerGUI:
         state = tk.DISABLED if busy or not self.results else tk.NORMAL
         self.details_btn.config(state=state)
         self.surface_btn.config(state=state)
+        # Busy cursor so any in-progress open/compute is visible immediately.
+        self.root.config(cursor="watch" if busy else "")
+        self.root.update_idletasks()
 
 
 class AddMotorDialog:
@@ -1385,6 +1412,86 @@ class AddMotorDialog:
             return
         self.win.destroy()
         self.on_success(motor_name(path), path)
+
+
+class OpenDialog:
+    """Pick a saved simulation or a recent run to load.
+
+    Calls ``on_open(kind, ref)`` where kind is "saved" (ref = name) or "recent"
+    (ref = results file path); ``on_delete(name)`` removes a saved simulation.
+    """
+
+    def __init__(self, parent, saved_configs, recents, on_open, on_delete):
+        self.on_open = on_open
+        self.on_delete = on_delete
+        self.win = tk.Toplevel(parent)
+        self.win.title("Open simulation")
+        self.win.geometry("560x420")
+        self.win.transient(parent)
+        self.win.grab_set()
+        self.win.bind("<Escape>", lambda e: self.win.destroy())
+
+        frm = ttk.Frame(self.win, padding=10)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text="Saved simulations and recent runs:").pack(anchor=tk.W)
+
+        box = ttk.Frame(frm)
+        box.pack(fill=tk.BOTH, expand=True, pady=6)
+        self.listbox = tk.Listbox(box, activestyle="dotbox")
+        vsb = ttk.Scrollbar(box, command=self.listbox.yview)
+        self.listbox.config(yscrollcommand=vsb.set)
+        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.listbox.bind("<Double-1>", lambda e: self._open())
+        self.listbox.bind("<Return>", lambda e: self._open())
+
+        self.entries = []  # (kind, ref, deletable)
+        for name in sorted(saved_configs):
+            payload = saved_configs[name]
+            kind = payload.get("kind", "single")
+            obj = payload.get("objective", "?")
+            self.listbox.insert(tk.END, f"[saved]  {name}   ({kind}, {obj})")
+            self.entries.append(("saved", name, True))
+        for entry in recents:
+            self.listbox.insert(tk.END, f"[recent]  {entry['label']}")
+            self.entries.append(("recent", entry["path"], False))
+        if self.entries:
+            self.listbox.selection_set(0)
+
+        btns = ttk.Frame(frm)
+        btns.pack(fill=tk.X)
+        ttk.Button(btns, text="Open", command=self._open).pack(side=tk.LEFT)
+        ttk.Button(btns, text="Delete", command=self._delete).pack(
+            side=tk.LEFT, padx=6)
+        ttk.Button(btns, text="Close", command=self.win.destroy).pack(side=tk.RIGHT)
+        self.listbox.focus_set()
+
+    def _selected(self):
+        sel = self.listbox.curselection()
+        return (sel[0], self.entries[sel[0]]) if sel else (None, None)
+
+    def _open(self):
+        _, entry = self._selected()
+        if not entry:
+            return
+        kind, ref, _ = entry
+        self.win.destroy()
+        self.on_open(kind, ref)
+
+    def _delete(self):
+        idx, entry = self._selected()
+        if not entry:
+            return
+        kind, ref, deletable = entry
+        if not deletable:
+            messagebox.showinfo("Can't delete", "Recent runs can't be deleted here.",
+                                parent=self.win)
+            return
+        if messagebox.askyesno("Delete", f"Delete saved simulation '{ref}'?",
+                               parent=self.win):
+            self.on_delete(ref)
+            self.listbox.delete(idx)
+            self.entries.pop(idx)
 
 
 class DualRangeSlider(ttk.Frame):

@@ -99,7 +99,7 @@ def save_saved_configs(configs):
 
 
 # --- results history ----------------------------------------------------
-def _serializable_results(results):
+def serializable_results(results):
     """Keep only the JSON-friendly fields of each optimizer result."""
     slim = []
     for r in results:
@@ -111,6 +111,9 @@ def _serializable_results(results):
             "converged": r.get("converged", True),
         })
     return slim
+
+
+_serializable_results = serializable_results  # backwards-compatible alias
 
 
 def save_results(config, results, objective):

@@ -22,10 +22,13 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 import matplotlib
 
 matplotlib.use("Agg")  # figures are embedded via FigureCanvasTkAgg, not shown
+import mpl_toolkits.mplot3d  # noqa: E402,F401  (registers the 3d projection)
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # noqa: E402
+from matplotlib.figure import Figure  # noqa: E402
 
 import store  # noqa: E402
-from optimizer import optimize  # noqa: E402
+import surface  # noqa: E402
+from optimizer import make_scorer, optimize  # noqa: E402
 from simulation import (  # noqa: E402
     LIBRARY_DIR,
     SAVED_DIR,
@@ -347,6 +350,10 @@ class OptimizerGUI:
             actions, text="Show data & plots (or double-click a row)",
             command=self.on_show_details, state=tk.DISABLED)
         self.details_btn.pack(side=tk.LEFT)
+        self.surface_btn = ttk.Button(
+            actions, text="Objective vs mass", command=self.on_show_surface,
+            state=tk.DISABLED)
+        self.surface_btn.pack(side=tk.LEFT, padx=6)
         ttk.Button(actions, text="Save configuration",
                    command=self.on_save_config).pack(side=tk.LEFT, padx=6)
 
@@ -805,7 +812,8 @@ class OptimizerGUI:
         else:
             # Sweep: a dedicated matrix + per-C_d·A window.
             motor_count = len(sweep[0]["results"]) if sweep else 0
-            SweepResultsWindow(self.root, cda_values, sweep, self._start_details)
+            SweepResultsWindow(self.root, cda_values, sweep, self._start_details,
+                               self._start_surface)
             self._set_busy(False, f"Done. Swept {len(cda_values)} C_d·A values × "
                                   f"{motor_count} motor(s), by {objective}.")
 
@@ -851,8 +859,9 @@ class OptimizerGUI:
             self._apply_config(cfg)
             self._set_chosen_from_results(self.results)
         self.status.config(text=message)
-        self.details_btn.config(
-            state=tk.NORMAL if self.results else tk.DISABLED)
+        state = tk.NORMAL if self.results else tk.DISABLED
+        self.details_btn.config(state=state)
+        self.surface_btn.config(state=state)
 
     def _set_chosen_from_results(self, results):
         """Set the Chosen list to the motors used in a loaded run."""
@@ -878,6 +887,60 @@ class OptimizerGUI:
             return
         result = self.results[int(sel[0])]
         self._start_details(self.cfg, result["motor_file"], result["mass"])
+
+    # --- objective-vs-mass optimization surface -------------------------
+    def on_show_surface(self):
+        """Plot the objective score vs mass for the selected motor (single
+        C_d·A here; the sweep window handles the 2-D surface)."""
+        if self._busy or not self.results:
+            return
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("No selection", "Select a configuration first.")
+            return
+        result = self.results[int(sel[0])]
+        cda = self.cfg["rocket"]["cda"]
+        score_fn = make_scorer(self.cfg["optimizer"])
+        optima = {cda: (result["mass"],
+                        score_fn(result["metrics"], result["mass"]))}
+        self._start_surface(self.cfg, [cda], result["motor_file"], optima)
+
+    def _start_surface(self, config, cda_values, motor_file, optima):
+        """Sample the objective surface for one motor in a worker thread.
+
+        ``cda_values`` with one entry -> a 1-D objective-vs-mass curve; more
+        than one -> a (C_d·A, mass) surface. ``optima`` maps each C_d·A value to
+        the (mass, score) the optimizer found, drawn as markers.
+        """
+        self._set_busy(True, f"Sampling objective surface for "
+                             f"{motor_name(motor_file)}...")
+        threading.Thread(target=self._surface_worker,
+                         args=(config, cda_values, motor_file, optima),
+                         daemon=True).start()
+
+    def _surface_worker(self, config, cda_values, motor_file, optima):
+        try:
+            if len(cda_values) == 1:
+                cfg = copy.deepcopy(config)
+                cfg["rocket"]["cda"] = cda_values[0]
+                masses, scores = surface.objective_vs_mass(cfg, motor_file)
+                data = ("curve", masses, scores)
+            else:
+                def progress(done, total):
+                    self.root.after(0, self.status.config,
+                                    {"text": f"Sampling surface {done}/{total}..."})
+                cdas, masses, grid = surface.objective_surface(
+                    config, motor_file, cda_values, progress=progress)
+                data = ("surface", cdas, masses, grid)
+        except Exception as exc:
+            self.root.after(0, self._run_failed, exc)
+            return
+        self.root.after(0, self._surface_done, config, motor_file, optima, data)
+
+    def _surface_done(self, config, motor_file, optima, data):
+        self._set_busy(False, "Ready")
+        objective = config["optimizer"]["objective"]
+        SurfaceWindow(self.root, motor_name(motor_file), objective, optima, data)
 
     def _start_details(self, config, motor_file, mass):
         self._set_busy(True, f"Simulating {motor_name(motor_file)}...")
@@ -1006,8 +1069,9 @@ class OptimizerGUI:
         self._busy = busy
         self.status.config(text=message)
         self.run_btn.config(state=tk.DISABLED if busy else tk.NORMAL)
-        self.details_btn.config(
-            state=tk.DISABLED if busy or not self.results else tk.NORMAL)
+        state = tk.DISABLED if busy or not self.results else tk.NORMAL
+        self.details_btn.config(state=state)
+        self.surface_btn.config(state=state)
 
 
 class AddMotorDialog:
@@ -1568,10 +1632,11 @@ class SweepResultsWindow:
     configuration's full plots + CSV via ``on_details(config, motor_file, mass)``.
     """
 
-    def __init__(self, parent, cda_values, sweep, on_details):
+    def __init__(self, parent, cda_values, sweep, on_details, on_surface):
         self.cda_values = cda_values
         self.sweep = sweep                 # [{"cda", "config", "results"}]
         self.on_details = on_details
+        self.on_surface = on_surface
         self.objective = sweep[0]["config"]["optimizer"]["objective"]
 
         # (cda index, motor name) -> result, for cell lookups.
@@ -1648,6 +1713,7 @@ class SweepResultsWindow:
         table = ttk.Frame(tab)
         table.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
         tree = ttk.Treeview(table, columns=cols, show="headings")
+        self.summary_tree = tree
         tree.heading("motor", text="Motor")
         tree.column("motor", width=180, anchor=tk.W)
         for i, cda in enumerate(self.cda_values):
@@ -1680,6 +1746,31 @@ class SweepResultsWindow:
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
         tree.bind("<Double-1>", lambda e: self._open_cell(tree, e))
+
+        bar = ttk.Frame(tab)
+        bar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Button(bar, text="Objective surface for selected motor",
+                   command=self._open_surface).pack(side=tk.LEFT)
+
+    def _open_surface(self):
+        """Open the (C_d·A × mass) objective surface for the selected motor."""
+        sel = self.summary_tree.selection()
+        if not sel:
+            messagebox.showinfo("No selection", "Select a motor row first.",
+                                parent=self.win)
+            return
+        name = sel[0]                       # summary rows use the motor name as iid
+        score_fn = make_scorer(self.sweep[0]["config"]["optimizer"])
+        optima = {}
+        motor_file = None
+        for i, cda in enumerate(self.cda_values):
+            r = self.by.get((i, name))
+            if r:
+                motor_file = r["motor_file"]
+                optima[cda] = (r["mass"], score_fn(r["metrics"], r["mass"]))
+        if motor_file is not None:
+            self.on_surface(self.sweep[0]["config"], list(self.cda_values),
+                            motor_file, optima)
 
     def _open_cell(self, tree, event):
         name = tree.identify_row(event.y)
@@ -1736,6 +1827,95 @@ class SweepResultsWindow:
                 self.on_details(cfg, r["motor_file"], r["mass"])
 
         tree.bind("<Double-1>", open_row)
+
+
+class SurfaceWindow:
+    """The objective-vs-mass optimization surface for one motor.
+
+    Single C_d·A -> a 2-D curve of objective score vs mass with the optimizer's
+    optimum marked. A C_d·A sweep -> a 3-D surface plus a top-down contour of
+    the score over the (C_d·A, mass) grid, each C_d·A's optimum marked in red.
+    """
+
+    def __init__(self, parent, motor, objective, optima, data):
+        self.motor = motor
+        self.objective = objective
+        self.optima = optima             # cda value -> (mass, score)
+
+        self.win = tk.Toplevel(parent)
+        self.win.title(f"Optimization surface — {motor} ({objective})")
+        self.win.geometry("900x680")
+
+        if data[0] == "curve":
+            _, masses, scores = data
+            self._embed(self.win, self._curve_figure(masses, scores))
+        else:
+            _, cda_values, masses, grid = data
+            nb = ttk.Notebook(self.win)
+            nb.pack(fill=tk.BOTH, expand=True)
+            for title, fig in (
+                    ("3-D surface", self._surface_figure(cda_values, masses, grid)),
+                    ("Contour (top-down)", self._contour_figure(cda_values, masses, grid))):
+                tab = ttk.Frame(nb)
+                nb.add(tab, text=title)
+                self._embed(tab, fig)
+
+    @staticmethod
+    def _embed(parent, fig):
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    def _zlabel(self):
+        return f"objective score ({self.objective})"
+
+    def _curve_figure(self, masses, scores):
+        fig = Figure(figsize=(8, 5))
+        ax = fig.add_subplot(111)
+        ax.plot(masses, scores, "-", color="#3aa76d", lw=2)
+        ax.set_xlabel("airframe mass (kg)")
+        ax.set_ylabel(self._zlabel())
+        ax.set_title(f"Objective vs mass — {self.motor}")
+        ax.grid(True, alpha=0.3)
+        for mass, score in self.optima.values():
+            ax.plot([mass], [score], "o", color="#c00000", zorder=5)
+            ax.annotate(f"optimum {mass:.2f} kg", (mass, score),
+                        textcoords="offset points", xytext=(8, -2),
+                        fontsize=9, color="#c00000")
+        fig.tight_layout()
+        return fig
+
+    def _surface_figure(self, cda_values, masses, grid):
+        import numpy as np
+        fig = Figure(figsize=(8, 6))
+        ax = fig.add_subplot(111, projection="3d")
+        mesh_m, mesh_c = np.meshgrid(masses, cda_values)
+        ax.plot_surface(mesh_m, mesh_c, np.array(grid), cmap="viridis",
+                        alpha=0.9, linewidth=0)
+        for cda, (mass, score) in self.optima.items():
+            ax.scatter([mass], [cda], [score], color="#c00000", s=30, depthshade=False)
+        ax.set_xlabel("mass (kg)")
+        ax.set_ylabel("C_d·A (m²)")
+        ax.set_zlabel(self._zlabel())
+        ax.set_title(f"Objective surface — {self.motor}")
+        fig.tight_layout()
+        return fig
+
+    def _contour_figure(self, cda_values, masses, grid):
+        import numpy as np
+        fig = Figure(figsize=(8, 6))
+        ax = fig.add_subplot(111)
+        mesh_m, mesh_c = np.meshgrid(masses, cda_values)
+        filled = ax.contourf(mesh_m, mesh_c, np.array(grid), levels=20,
+                             cmap="viridis")
+        fig.colorbar(filled, ax=ax, label=self._zlabel())
+        for cda, (mass, _score) in self.optima.items():
+            ax.plot([mass], [cda], "o", color="#c00000", ms=5)
+        ax.set_xlabel("mass (kg)")
+        ax.set_ylabel("C_d·A (m²)")
+        ax.set_title(f"Objective surface (top-down) — {self.motor}")
+        fig.tight_layout()
+        return fig
 
 
 def main():

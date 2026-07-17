@@ -10,17 +10,16 @@ then ranks the motors against each other. Built on [RocketPy](https://github.com
 
 ## Install
 
+Requires **Python 3.9+**.
+
 ```
+git clone https://github.com/KnaaZzZ/rocket-trajectory.git
+cd rocket-trajectory
 python -m pip install -r requirements.txt
 ```
 
-Then populate the motor library (RASP `.eng` files) from thrustcurve.org:
-
-```
-python download_motors.py                    # all Cesaroni motors
-python download_motors.py --manufacturer AeroTech
-python download_motors.py --impulse-class N  # only class N
-```
+The motor library (~970 RASP `.eng` files) ships with the repo under `data/library`,
+so there's nothing else to download.
 
 ## Run
 
@@ -69,10 +68,9 @@ Reported metrics: apogee (above ground), apogee time, max speed, max Mach, max a
 | `surface.py` | Score sampling for the 1-D / 2-D optimization-surface plots |
 | `gui.py` | Tkinter UI, threading, plot embedding, CSV export |
 | `store.py` | JSON persistence: settings, presets, saved configs, run history |
-| `download_motors.py` | Fetches the motor library from thrustcurve.org |
 
-Motor directories: `data/library` (full downloaded set, read-only source) and
-`data/saved` (kept working set, shadows the library by name).
+Motor directories: `data/library` (the bundled motor set) and `data/saved` (motors you
+add/keep, which shadow the library by name).
 
 ## Future work (V2)
 

@@ -84,7 +84,7 @@ Motor directories: `data/library` (full downloaded set, read-only source) and
 
 ## Feedback, bugs & support
 
-Found a bug or have feedback? Please [open an issue on GitHub](GITHUB_REPO_URL) with a
-short description (and, for bugs, the steps that triggered it). If the tool saved you
-effort, please consider supporting continued development via
-[GitHub Sponsors](GITHUB_SPONSORS_URL).
+Found a bug or have feedback? Please [open an issue on GitHub](https://github.com/KnaaZzZ/rocket-trajectory/issues)
+with a short description (and, for bugs, the steps that triggered it). If the tool saved
+you effort, please consider supporting continued development via
+[GitHub Sponsors](https://github.com/sponsors/KnaaZzZ).

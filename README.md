@@ -35,6 +35,32 @@ The window has three columns:
 - **Results** — the ranked table (best airframe mass per motor). Double-click a row to
   run that configuration in full: numeric summary, every flight plot, and a CSV export.
 
+## Inputs
+
+Set these in the **Config** column before running. Each input group can be saved as a
+named preset.
+
+| Group | Input | Meaning |
+|---|---|---|
+| Environment | Latitude / Longitude (deg) | Launch-site coordinates. |
+| Environment | Elevation (m ASL) | Ground height above sea level. Apogee is reported *above the ground*. |
+| Rocket | Drag area C_d·A (m²) | Drag coefficient × frontal area, combined into one number. Higher = more drag = lower flights. |
+| Flight | Rail length (m) | Length of the launch rail/guide. |
+| Flight | Inclination (deg from horizontal) | Launch angle; 90 = straight up. |
+| Optimizer | Objective | What to maximize (see [Objectives](#objectives)). |
+| Optimizer | Mach limit | Used only by `apogee_capped_mach`: keeps top speed under this Mach. |
+| Optimizer | Target altitude (m) | Used only by `min_mass_for_altitude`: the apogee to hit. |
+| Optimizer | Initial mass guess (kg) | Starting airframe mass for the search. |
+| Optimizer | Mass min / Mass max (kg) | Bounds the optimizer keeps the airframe mass within. |
+| Optimizer | FD step (kg) | Finite-difference step used to estimate the gradient. |
+| Optimizer | Max step (kg) | Largest mass change per iteration (backtracked down as needed). |
+| Optimizer | Tolerance (kg) | Stops when improving steps fall below this size. |
+| Optimizer | Max iterations | Cap on gradient-ascent steps per start. |
+| Optimizer | Multi-start restarts | Number of starting masses spread across the bounds (guards against a bumpy curve). |
+
+The solver knobs (FD step through Multi-start restarts) have sensible defaults — only touch
+them if a run looks stuck or too coarse.
+
 ## Objectives
 
 | Objective | Finds the mass that… |

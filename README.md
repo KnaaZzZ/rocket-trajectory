@@ -83,6 +83,6 @@ Motor directories: `data/library` (full downloaded set, read-only source) and
 
 ## Feedback, bugs & support
 
-Feedback and bug reports are welcome — email **yar.knaz@gmail.com** with a short
-description (and, for bugs, the steps that triggered it). If the tool saved you effort,
-please consider a small donation to support continued development.
+Found a bug or have feedback? Please [open an issue on GitHub](GITHUB_REPO_URL) with a
+short description (and, for bugs, the steps that triggered it). If the tool saved you
+effort, please consider a small donation to support continued development.

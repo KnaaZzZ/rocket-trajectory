@@ -80,9 +80,11 @@ Motor directories: `data/library` (full downloaded set, read-only source) and
 - **Interpolation** — pick any mass and drag (C_d·A) and read the predicted apogee straight off the optimization surface, without re-running the sim.
 - **Better visualization** — clearer, richer plots and surface views.
 - **Units & tooltips** — unit labels throughout and hover hints explaining each field.
+- **Standalone app** — package as a desktop app/installer so it runs without a Python setup.
 
 ## Feedback, bugs & support
 
 Found a bug or have feedback? Please [open an issue on GitHub](GITHUB_REPO_URL) with a
 short description (and, for bugs, the steps that triggered it). If the tool saved you
-effort, please consider a small donation to support continued development.
+effort, please consider supporting continued development via
+[GitHub Sponsors](GITHUB_SPONSORS_URL).

@@ -77,7 +77,7 @@ Motor directories: `data/library` (full downloaded set, read-only source) and
 ## Future work (V2)
 
 - **Real weather** — swap the standard atmosphere for actual conditions (wind, temperature, pressure).
-- **Interpolation** — smooth results across mass and C_d·A instead of discrete points.
+- **Interpolation** — pick any mass and drag (C_d·A) and read the predicted apogee straight off the optimization surface, without re-running the sim.
 - **Better visualization** — clearer, richer plots and surface views.
 - **Units & tooltips** — unit labels throughout and hover hints explaining each field.
 
